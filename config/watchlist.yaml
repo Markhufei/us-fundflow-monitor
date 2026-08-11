@@ -1,0 +1,95 @@
+# 美股资金流动监控 - 标的与阈值配置
+# 更新: 2026-07-21
+
+# SEC EDGAR 要求的 User-Agent（占位邮箱，EDGAR 政策要求标识身份，可改为真实邮箱）
+sec_user_agent: "huangshifei@example.com"
+
+# 请求间隔（秒），避免限流
+request_delay: 1.0
+
+# ===== 监控标的 =====
+watchlist:
+  stocks:
+    - symbol: MU
+      name: 美光科技
+      exchange: NASDAQ
+      category: stock
+    - symbol: SNDK
+      name: 闪迪 SanDisk
+      exchange: NASDAQ
+      category: stock
+      note: "2025-02 从 WDC 分拆上市，历史数据不足 1 年，均量计算需降级"
+    - symbol: SKHXY
+      name: SK海力士 OTC 存托凭证
+      exchange: OTC
+      category: stock
+      fallback_symbol: "000660.KS"
+      note: "韩股 000660.KS 的美股 ADR，流动性低，数据稀疏时 fallback 到韩股"
+
+  etfs:
+    - symbol: SOXX
+      name: iShares 半导体 ETF
+      track: 费城半导体指数 SOX
+      category: etf
+    - symbol: SMH
+      name: VanEck 半导体 ETF
+      track: MVIS 半导体指数
+      category: etf
+
+# ===== 异动判定阈值 =====
+thresholds:
+  volume_spike_ratio: 1.8       # 日量 / 20日均量 > 此值 -> 异常
+  price_move_pct: 0.05          # 日涨跌幅 > 此值 -> 异常
+  cmf_reversal_abs: 0.3         # |CMF| > 此值 或 正负反转 -> 异常
+  inst_reduce_pct: 0.10         # 13F 前十大机构减持 > 此比例 -> 异常
+  insider_sell_usd: 1000000     # Form 4 内部人净卖出 > 此值 -> 异常
+  short_ratio_high: 0.40        # FINRA 短量占比 > 此值
+  short_ratio_delta: 0.10       # 短量占比环比上升 > 此值 -> 异常
+
+# ===== 计算周期 =====
+periods:
+  vol_avg_days: 20              # 成交量均线周期
+  cmf_period: 20                # Chaikin Money Flow 周期
+  mfi_period: 14                # Money Flow Index 周期
+  compare_short_days: 2         # 2日对比窗口
+  compare_week_days: 5          # 周对比窗口（5个交易日）
+
+# ===== 通知设置 =====
+alerts:
+  min_severity: "MEDIUM"        # MEDIUM 及以上才发 macOS 通知
+  log_file: "logs/fundflow.log"
+  report_dir: "reports"
+
+# ===== 版块轮动监控（SPDR Sector ETF）=====
+sector_etfs:
+  benchmark: SPY
+  etfs:
+    - { symbol: XLK,  sector: 科技 }
+    - { symbol: XLE,  sector: 能源 }
+    - { symbol: XLF,  sector: 金融 }
+    - { symbol: XLV,  sector: 医疗 }
+    - { symbol: XLY,  sector: 可选消费 }
+    - { symbol: XLP,  sector: 必需消费 }
+    - { symbol: XLI,  sector: 工业 }
+    - { symbol: XLB,  sector: 材料 }
+    - { symbol: XLRE, sector: 房地产 }
+    - { symbol: XLU,  sector: 公用事业 }
+    - { symbol: XLC,  sector: 通信 }
+
+# 版块轮动判定阈值
+sector_thresholds:
+  rs_momentum_cross: 0.0        # RS-Momentum 上穿此值 -> 转强候选
+  rs_ratio_cross: 100.0         # RS-Ratio 上穿此值 -> 强势确认
+  vol_confirm_zscore: 1.5       # 量能确认（当日 vol_zscore > 此值）
+  vol_high_zscore: 2.5          # 量能异常（单独告警）
+  prob_min_sample: 10           # 概率查询最小样本（低于此值标"低置信度"）
+  prob_high_sample: 30          # 高置信度样本阈值
+  sustained_days: 10            # "持续"定义：超额收益>0 的天数阈值
+  sustained_amplitude: 0.03     # "持续"定义：累计超额收益幅度阈值 3%
+
+# 版块计算周期
+sector_periods:
+  rs_ratio_period: 10           # RS-Ratio EMA 周期（日线，RRG 标准）
+  rs_momentum_period: 10        # RS-Momentum ROC 周期
+  sector_hist_days: 60          # 日常采集历史天数
+  backtest_years: 25            # 事件库回测年数（2000-2026）

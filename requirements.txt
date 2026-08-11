@@ -1,0 +1,10 @@
+# 美股资金流动监控 - Python 依赖
+yfinance>=0.2.40
+pandas>=2.0
+requests>=2.30
+pyyaml>=6.0
+pytest>=7.0
+
+# 版块轮动监控 Web 面板（Phase 5）
+streamlit>=1.30
+plotly>=5.18
