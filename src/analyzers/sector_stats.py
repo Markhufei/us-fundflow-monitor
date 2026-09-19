@@ -162,7 +162,8 @@ def query_probability(symbol: str,
                       rs_momentum: Optional[float],
                       db_path: str = "data/fundflow.db",
                       thresholds: Optional[Dict[str, Any]] = None,
-                      trigger_type: Optional[str] = None) -> Dict[str, Any]:
+                      trigger_type: Optional[str] = None,
+                      spy_above_ma200: Optional[int] = None) -> Dict[str, Any]:
     """查历史相似事件，算大资金移仓的持续概率。
 
     Args:
@@ -173,13 +174,17 @@ def query_probability(symbol: str,
         trigger_type: 触发类型过滤（momentum_cross / rs_cross）。
             生产必须传，防止跨类型污染——库内 84% 为 rs_cross，混入会使
             "量能确认的 momentum cross"概率被无量能确认事件稀释（2026-09-01 审查实证）。
+        spy_above_ma200: 当前 SPY regime（1=收盘>MA200，0=下方，None=未知）。
+            2026-09-20 实测（n=1298）：MA200 下方 rs_cross 持续率 33% vs 上方 24%，
+            是唯一有增量的市场状态变量。regime 内样本 < prob_min_sample 时回退全样本。
 
     Returns:
-        {probability, avg_duration, avg_amplitude, sample_size, confidence}
+        {probability, avg_duration, avg_amplitude, sample_size, confidence, regime_used}
         probability: 0-1，相似事件中 ret_20d >= sustained_amplitude 的比例；样本为 0 时 None
         avg_duration: 平均持续天数
         avg_amplitude: 平均 20 日超额收益（%，转百分号便于展示）
         confidence: 高/中/低（按样本量）
+        regime_used: 是否按 regime 分桶匹配（False = 样本不足回退全样本，或未传 regime）
     """
     if thresholds is None:
         thresholds = {}
@@ -189,13 +194,26 @@ def query_probability(symbol: str,
     min_sample = thresholds.get("prob_min_sample", 10)
     high_sample = thresholds.get("prob_high_sample", 30)
 
-    similar = store.query_history_events(symbol, rs_momentum, momentum_tol=tol_abs,
-                                         db_path=db_path, trigger_type=trigger_type)
+    # momentum_cross 的动量容差匹配无信息（分位无单调性，n≈41/格），退化为
+    # 同 symbol + 同触发类型基准率；rs_cross 保留动量窗口
+    match_momentum = rs_momentum if trigger_type != "momentum_cross" else None
+
+    regime_used = False
+    similar: list = []
+    if spy_above_ma200 is not None:
+        similar = store.query_history_events(symbol, match_momentum, momentum_tol=tol_abs,
+                                             db_path=db_path, trigger_type=trigger_type,
+                                             spy_above_ma200=spy_above_ma200)
+        regime_used = len(similar) >= min_sample
+    if not regime_used:
+        similar = store.query_history_events(symbol, match_momentum, momentum_tol=tol_abs,
+                                             db_path=db_path, trigger_type=trigger_type)
+        regime_used = False
     sample = len(similar)
 
     if sample == 0:
         return {"probability": None, "avg_duration": None, "avg_amplitude": None,
-                "sample_size": 0, "confidence": "低"}
+                "sample_size": 0, "confidence": "低", "regime_used": False}
 
     # "持续"判定：事件后 20 交易日超额收益 >= sustained_amplitude（单阈值，基准率 22.8%）
     sustained = [
@@ -223,6 +241,7 @@ def query_probability(symbol: str,
         "avg_amplitude": avg_amplitude,
         "sample_size": sample,
         "confidence": confidence,
+        "regime_used": regime_used,
     }
 
 

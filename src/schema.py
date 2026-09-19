@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS sector_rotation_events (
     severity      TEXT NOT NULL,
     message       TEXT NOT NULL,
     created_at    TEXT NOT NULL,
+    trigger_type  TEXT,                -- momentum_cross / rs_cross
     UNIQUE(date, from_sector, to_sector)
 );
 """
@@ -97,7 +98,8 @@ CREATE TABLE IF NOT EXISTS sector_history_events (
     ret_10d         REAL,
     ret_20d         REAL,
     ret_60d         REAL,
-    duration_days   INTEGER            -- 持续天数（超额收益>0 的连续天数）
+    duration_days   INTEGER,           -- 持续天数（超额收益>0 的连续天数）
+    spy_above_ma200 INTEGER            -- 事件日 SPY 收盘 > 其 MA200（1/0/NULL，regime 分桶用）
 );
 CREATE INDEX IF NOT EXISTS idx_history_symbol ON sector_history_events(symbol);
 CREATE INDEX IF NOT EXISTS idx_history_momentum ON sector_history_events(rs_momentum);

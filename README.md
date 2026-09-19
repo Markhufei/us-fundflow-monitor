@@ -120,6 +120,10 @@ web/app.py                Streamlit 多页面仪表盘（总览/RRG/信号/事�
 - **周期与去抖**（2026-08-31 回测定参，2025-10-01~2026-08-31 扣 0.1%/笔，5 对含 XLK/XLE/XLF vs SPY）：
   period=30（旧 10 天切换 37-55 次/年 whipsaw 严重）；上穿需连续 2 天确认。周期/去抖在
   `config/watchlist.yaml` 的 `sector_periods` / `sector_thresholds`，检测与建库脚本共用
+- **参数敏感性（2026-09-20 全期复验，2006-11~2026-09，P20-40×N2-3，XLK/XLE/XLF vs SPY）**：
+  P30/N2 在全部 3 对上处中位、从不垫底（净收益 XLK +465%/XLE +241%/XLF +106%），
+  但最优组合随标的漂移（XLK 最优 P40/N2、XLE 最优 P30/N3、XLF 最优 P40/N3）——
+  属窗口敏感，维持 P30/N2 不改；P10 whipsaw 在全窗口复现（XLF 全期净亏 -42%）已排除
 - **量能 Z-Score**：基线窗口不含当日（放量日不抬高自身分母），min_periods=20，
   当日量偏离前 20 日中位数 10 倍以上视为坏数据置 NaN（07-28 型部分数据日守卫）
 - **from_sector 说明**：轮动消息中的 `from` 取当日 RS-Momentum 最低的版块，是叙事性标签，

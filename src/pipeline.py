@@ -313,11 +313,18 @@ def _run_sector(config: Dict[str, Any], db_path: str) -> "tuple[bool, List[str]]
     periods = config.get("sector_periods", {})
     hist_days = periods.get("sector_hist_days", 60)
 
-    # 拉基准 SPY
-    spy_hist = _drop_partial_tail(price_volume.collect(benchmark, days=hist_days))
+    # 拉基准 SPY（MA200 regime 需 250 根；RS 计算 60 根足够）
+    spy_hist = _drop_partial_tail(price_volume.collect(benchmark, days=max(hist_days, 250)))
     if not spy_hist:
         logger.warning(f"{benchmark} 数据获取失败，跳过版块扫描")
         return False, []
+
+    # SPY regime（收盘 vs MA200，供概率分桶；历史不足 200 天则 None 不分桶）
+    spy_closes = [h.get("close") for h in spy_hist if h.get("close") is not None]
+    if len(spy_closes) >= 200:
+        spy_above_ma200 = int(spy_closes[-1] > sum(spy_closes[-200:]) / 200)
+    else:
+        spy_above_ma200 = None
 
     # 存 SPY 快照（基准，RS 指标为 None）
     store.store_sector_snapshot({
@@ -384,7 +391,8 @@ def _run_sector(config: Dict[str, Any], db_path: str) -> "tuple[bool, List[str]]
             continue
         prev_snapshots.append(prev)
 
-    alerts = sector_detector.detect_rotation(snapshots, prev_snapshots, db_path, thresholds)
+    alerts = sector_detector.detect_rotation(snapshots, prev_snapshots, db_path, thresholds,
+                                             spy_above_ma200=spy_above_ma200)
 
     if alerts:
         created_at = datetime.now().isoformat()

@@ -40,7 +40,7 @@ view = df[mask].copy().sort_values("date", ascending=False)
 
 st.metric("筛选后信号数", len(view))
 
-show = ["date", "from_sector", "to_sector", "概率%", "avg_duration",
+show = ["date", "from_sector", "to_sector", "trigger_type", "概率%", "avg_duration",
         "avg_amplitude", "sample_size", "confidence", "severity", "message"]
 st.dataframe(view[[c for c in show if c in view.columns]], width="stretch", hide_index=True)
 

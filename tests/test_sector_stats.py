@@ -310,3 +310,58 @@ def test_wilson_ci_bounds():
     assert hi == 1.0 and lo > 0.4
     lo, hi = sector_stats.wilson_ci(0.5, 0)
     assert (lo, hi) == (0.0, 1.0)
+
+
+# ===================== Top2: regime 分桶 + momentum_cross 容差简化 =====================
+
+def test_query_probability_regime_bucket(tmp_path):
+    """regime 匹配: 同 symbol+类型内按 spy_above_ma200 分桶，样本足够时用桶内概率。"""
+    db = str(tmp_path / "t.db")
+    # 上方 regime 4 个（3 持续）、下方 regime 4 个（0 持续），momentum 全部在 1.5±0.5
+    _seed_history(db, [
+        {"event_date": f"2020-{m:02d}-01", "symbol": "XLE", "trigger_type": "rs_cross",
+         "rs_momentum": 1.5, "ret_20d": ret, "spy_above_ma200": above}
+        for m, ret, above in
+        [(1, 0.05, 1), (2, 0.08, 1), (3, 0.04, 1), (4, 0.01, 1),
+         (5, 0.01, 0), (6, 0.00, 0), (7, -0.02, 0), (8, 0.01, 0)]
+    ])
+    th = {"prob_min_sample": 3, "prob_high_sample": 30}
+    above = sector_stats.query_probability("XLE", 1.5, db_path=db, thresholds=th,
+                                           trigger_type="rs_cross", spy_above_ma200=1)
+    below = sector_stats.query_probability("XLE", 1.5, db_path=db, thresholds=th,
+                                           trigger_type="rs_cross", spy_above_ma200=0)
+    assert above["regime_used"] and above["sample_size"] == 4
+    assert abs(above["probability"] - 0.75) < 1e-9
+    assert below["regime_used"] and below["sample_size"] == 4
+    assert below["probability"] == 0.0
+
+
+def test_query_probability_regime_fallback_when_sparse(tmp_path):
+    """regime 桶内样本 < prob_min_sample 时回退全样本，regime_used=False。"""
+    db = str(tmp_path / "t.db")
+    _seed_history(db, [
+        {"event_date": "2020-01-01", "symbol": "XLE", "trigger_type": "rs_cross",
+         "rs_momentum": 1.5, "ret_20d": 0.05, "spy_above_ma200": 1},  # 桶内仅 1 条
+        {"event_date": "2020-02-01", "symbol": "XLE", "trigger_type": "rs_cross",
+         "rs_momentum": 1.5, "ret_20d": 0.01, "spy_above_ma200": 0},
+    ])
+    th = {"prob_min_sample": 3}
+    r = sector_stats.query_probability("XLE", 1.5, db_path=db, thresholds=th,
+                                       trigger_type="rs_cross", spy_above_ma200=1)
+    assert r["regime_used"] is False and r["sample_size"] == 2
+
+
+def test_query_probability_momentum_cross_skips_tolerance(tmp_path):
+    """momentum_cross 退化为同 symbol+类型基准率：动量窗口外的事件也计入。"""
+    db = str(tmp_path / "t.db")
+    _seed_history(db, [
+        # 动量 9.9 远超 ±0.5 窗口，但 momentum_cross 匹配不应排除它
+        {"event_date": "2020-01-01", "symbol": "XLK", "trigger_type": "momentum_cross",
+         "rs_momentum": 9.9, "ret_20d": 0.05},
+        {"event_date": "2020-02-01", "symbol": "XLK", "trigger_type": "momentum_cross",
+         "rs_momentum": 1.5, "ret_20d": 0.01},
+    ])
+    r = sector_stats.query_probability("XLK", 1.5, db_path=db,
+                                       trigger_type="momentum_cross")
+    assert r["sample_size"] == 2
+    assert abs(r["probability"] - 0.5) < 1e-9

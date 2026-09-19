@@ -168,6 +168,8 @@ def main():
         # 成交量 Z-Score（与 flow_indicators 同一实现：基线不含当日 + 量级守卫）
         merged["vol_zscore"] = flow_indicators.vol_zscore_series(
             merged["volume"], VOL_PERIOD)
+        # SPY MA200 regime（在 merged 内计算保证行对齐；未热为 NaN）
+        merged["spy_ma200"] = merged["spy_close"].rolling(200, min_periods=200).mean()
 
         # 识别事件（去抖确认，与 detect_rotation 同一语义）
         events = sector_stats.identify_events(
@@ -189,6 +191,8 @@ def main():
                 continue
             outcomes = sector_stats.compute_outcomes(idx, sec_close, spy_close)
             ev.update(outcomes)
+            ma = merged["spy_ma200"].iloc[idx]
+            ev["spy_above_ma200"] = None if pd.isna(ma) else int(spy_close[idx] > ma)
             ev["symbol"] = sym
             ev["sector"] = sector
             all_events.append(ev)

@@ -39,6 +39,14 @@ def init_db(db_path: str = "data/fundflow.db"):
     if "detail" not in cols:
         cursor.execute("ALTER TABLE alerts ADD COLUMN detail TEXT")
 
+    # 幂等迁移: 老库存量表补新列（2026-09-20 Top2）
+    rot_cols = [row[1] for row in cursor.execute("PRAGMA table_info(sector_rotation_events)").fetchall()]
+    if "trigger_type" not in rot_cols:
+        cursor.execute("ALTER TABLE sector_rotation_events ADD COLUMN trigger_type TEXT")
+    hist_cols = [row[1] for row in cursor.execute("PRAGMA table_info(sector_history_events)").fetchall()]
+    if "spy_above_ma200" not in hist_cols:
+        cursor.execute("ALTER TABLE sector_history_events ADD COLUMN spy_above_ma200 INTEGER")
+
     conn.commit()
     conn.close()
 
@@ -302,13 +310,13 @@ def store_history_events(events: List[Dict[str, Any]], db_path: str = "data/fund
         cursor.execute("""
             INSERT INTO sector_history_events
             (event_date, symbol, sector, trigger_type, rs_momentum, vol_zscore,
-             ret_5d, ret_10d, ret_20d, ret_60d, duration_days)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ret_5d, ret_10d, ret_20d, ret_60d, duration_days, spy_above_ma200)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             e.get("event_date"), e.get("symbol"), e.get("sector"),
             e.get("trigger_type"), e.get("rs_momentum"), e.get("vol_zscore"),
             e.get("ret_5d"), e.get("ret_10d"), e.get("ret_20d"), e.get("ret_60d"),
-            e.get("duration_days"),
+            e.get("duration_days"), e.get("spy_above_ma200"),
         ))
     conn.commit()
     conn.close()
@@ -317,7 +325,8 @@ def store_history_events(events: List[Dict[str, Any]], db_path: str = "data/fund
 def query_history_events(symbol: str, rs_momentum: Optional[float],
                          momentum_tol: float = 0.5,
                          db_path: str = "data/fundflow.db",
-                         trigger_type: Optional[str] = None) -> List[Dict[str, Any]]:
+                         trigger_type: Optional[str] = None,
+                         spy_above_ma200: Optional[int] = None) -> List[Dict[str, Any]]:
     """查询相似历史事件（同版块 + 同触发类型 + RS-Momentum 绝对容差 ±momentum_tol）。
 
     2026-09-01 方法学重做:
@@ -327,8 +336,10 @@ def query_history_events(symbol: str, rs_momentum: Optional[float],
       - 新增 trigger_type 过滤：库内 84% 为 rs_cross（无量能确认），不过滤会跨类型
         污染 momentum_cross 查询（实测预测概率≈4.8% 基准率，无判别力）。
         None 不限类型（仅测试/统计用，生产查询必须传具体类型）。
+    2026-09-20 Top2:
+      - 新增 spy_above_ma200 regime 过滤（1/0/None）。None 不过滤（老库无该列数据时的兼容路径）。
 
-    rs_momentum 为 None 时返回该 symbol（可再按 trigger_type 过滤）的全部事件。
+    rs_momentum 为 None 时返回该 symbol（可再按 trigger_type/regime 过滤）的全部事件。
     """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -338,6 +349,9 @@ def query_history_events(symbol: str, rs_momentum: Optional[float],
     if trigger_type is not None:
         sql += " AND trigger_type = ?"
         params.append(trigger_type)
+    if spy_above_ma200 is not None:
+        sql += " AND spy_above_ma200 = ?"
+        params.append(spy_above_ma200)
     if rs_momentum is not None:
         sql += " AND rs_momentum BETWEEN ? AND ?"
         params.extend([rs_momentum - momentum_tol, rs_momentum + momentum_tol])
@@ -365,13 +379,14 @@ def store_rotation_events(events: List[Dict[str, Any]], db_path: str = "data/fun
         cursor.execute("""
             INSERT OR IGNORE INTO sector_rotation_events
             (date, from_sector, to_sector, to_symbol, probability, avg_duration,
-             avg_amplitude, sample_size, confidence, severity, message, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             avg_amplitude, sample_size, confidence, severity, message, created_at,
+             trigger_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             e.get("date"), e.get("from_sector"), e.get("to_sector"), e.get("to_symbol"),
             e.get("probability"), e.get("avg_duration"), e.get("avg_amplitude"),
             e.get("sample_size"), e.get("confidence"), e.get("severity"),
-            e.get("message"), e.get("created_at"),
+            e.get("message"), e.get("created_at"), e.get("trigger_type"),
         ))
     conn.commit()
     conn.close()

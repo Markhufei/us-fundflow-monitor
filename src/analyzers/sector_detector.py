@@ -32,7 +32,8 @@ from src.schema import SEVERITY_HIGH, SEVERITY_MEDIUM
 def detect_rotation(cur_snapshots: List[Dict[str, Any]],
                     prev_snapshots: List[Dict[str, Any]],
                     db_path: str,
-                    thresholds: Dict[str, Any]) -> List[Dict[str, Any]]:
+                    thresholds: Dict[str, Any],
+                    spy_above_ma200: Optional[int] = None) -> List[Dict[str, Any]]:
     """检测版块轮动信号。
 
     Args:
@@ -40,6 +41,7 @@ def detect_rotation(cur_snapshots: List[Dict[str, Any]],
         prev_snapshots: 前一交易日各版块快照（DB 历史缺失时的兜底数据源）
         db_path: 数据库路径（读历史快照做去抖 + 查历史事件库算概率）
         thresholds: sector_thresholds 配置
+        spy_above_ma200: 当前 SPY regime（1/0/None），透传概率查询做分桶匹配
 
     Returns:
         轮动事件 list [{date, from_sector, to_sector, to_symbol, trigger_type,
@@ -97,7 +99,7 @@ def detect_rotation(cur_snapshots: List[Dict[str, Any]],
     for to_sec in strong:
         prob = sector_stats.query_probability(
             to_sec["symbol"], to_sec.get("rs_momentum"), db_path, thresholds,
-            trigger_type=to_sec["_trigger"])
+            trigger_type=to_sec["_trigger"], spy_above_ma200=spy_above_ma200)
 
         # 严重度: 概率 > 0.6 + 高置信 -> HIGH（低样本高概率不误发）
         probability = prob.get("probability")

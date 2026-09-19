@@ -147,3 +147,26 @@ def test_get_rotation_events_recent(tmp_path):
     recent = store.get_rotation_events(days=30, db_path=db)
     assert len(recent) >= 1
     assert recent[0]["to_sector"] == "能源"
+
+
+def test_top2_migration_and_trigger_type_roundtrip(tmp_path):
+    """init_db 建库含新列；rotation 事件 trigger_type 落库可读回（Top2）。"""
+    db = str(tmp_path / "t.db")
+    store.init_db(db)
+    conn = sqlite3.connect(db)
+    rot_cols = [r[1] for r in conn.execute("PRAGMA table_info(sector_rotation_events)").fetchall()]
+    hist_cols = [r[1] for r in conn.execute("PRAGMA table_info(sector_history_events)").fetchall()]
+    conn.close()
+    assert "trigger_type" in rot_cols
+    assert "spy_above_ma200" in hist_cols
+
+    ts = datetime.now().isoformat()
+    d = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    store.store_rotation_events([
+        {"date": d, "from_sector": "科技", "to_sector": "能源", "to_symbol": "XLE",
+         "probability": 0.3, "avg_duration": 15, "avg_amplitude": 5.0,
+         "sample_size": 20, "confidence": "中", "severity": "MEDIUM",
+         "message": "m", "created_at": ts, "trigger_type": "rs_cross"},
+    ], db)
+    events = store.get_rotation_events(days=30, db_path=db)
+    assert events[0]["trigger_type"] == "rs_cross"
