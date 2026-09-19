@@ -1,9 +1,9 @@
 """单版块详情：RS 走势 + 历史事件 + 概率查询。"""
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
 
 from web import common
+from web.rrg_chart import render_flow_indicators
 
 common.init()
 st.title("🔍 版块详情")
@@ -11,26 +11,21 @@ st.title("🔍 版块详情")
 sym = st.selectbox("选择版块", list(common.SECTORS.keys()),
                    format_func=lambda s: f"{s} ({common.SECTORS[s]})")
 
-# RS 历史走势（双轴）
+# RS 历史走势（双轴，公共组件）
 st.subheader(f"{sym} RS 指标历史走势（近120天）")
 hist = common.load_sector_history(sym, days=120)
 if hist:
     hdf = pd.DataFrame(hist)
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=hdf["date"], y=hdf["rs_ratio"],
-                             name="RS-Ratio", line=dict(color="#1f77b4")))
-    fig.add_trace(go.Scatter(x=hdf["date"], y=hdf["rs_momentum"],
-                             name="RS-Momentum", yaxis="y2", line=dict(color="#ff7f0e")))
-    fig.add_hline(y=100, line_dash="dash", line_color="#1f77b4")
-    fig.add_hline(y=0, line_dash="dash", line_color="#ff7f0e")
-    fig.update_layout(
-        yaxis=dict(title="RS-Ratio（>100 跑赢大盘）"),
-        yaxis2=dict(title="RS-Momentum（>0 上升）", overlaying="y", side="right"),
-        height=420,
-        hovermode="x unified",
-        legend=dict(orientation="h", y=1.1),
-    )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(common.render_rs_chart(hdf), width="stretch")
+    st.caption(f"数据截至: {hist[-1].get('date', '未知')}")
+
+    # 资金流指标子图（MFI / CMF / vol_zscore）
+    st.subheader(f"{sym} 资金流指标（近120天）")
+    flow_fig = render_flow_indicators(hdf)
+    if flow_fig is not None:
+        st.plotly_chart(flow_fig, width="stretch")
+    else:
+        st.info("该版块无资金流指标数据（MFI/CMF/vol_zscore 均为空）")
 else:
     st.info(f"无 {sym} 历史快照")
 

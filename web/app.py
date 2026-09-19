@@ -12,10 +12,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
-import pandas as pd
 
 from web import common
-from web.rrg_chart import render_rrg, quadrant
+from web.rrg_chart import render_rrg, render_rrg_trail, quadrant
 
 st.set_page_config(page_title="美股版块轮动监控", page_icon="📊", layout="wide")
 
@@ -43,18 +42,26 @@ with col_btn:
                     config = yaml.safe_load(f)
                 st.write("拉取 11 版块 + SPY 数据（Twelve Data，约 10-30 秒）...")
                 from src.pipeline import _run_sector
-                ok = _run_sector(config, common.DB_PATH)
+                result = _run_sector(config, common.DB_PATH)
+                # 兼容两种返回: bool（旧） / (ok, skipped)（新约定，review-data 落地后生效）
+                if isinstance(result, tuple):
+                    ok, skipped = result
+                else:
+                    ok, skipped = bool(result), []
                 if not ok:
                     status.update(
                         label="❌ 扫描失败：SPY 数据获取失败（数据源限流或网络），稍后重试",
                         state="error",
                     )
                 else:
+                    common.clear_data_cache()
                     new_signals = common.load_signals(days=1)
                     snapshots = common.load_snapshots()
-                    latest = max((s.get("date") for s in snapshots if s.get("date")), default="?")
+                    latest = common.latest_snapshot_date(snapshots) or "?"
+                    skip_str = f" · ⚠️ 跳过: {'、'.join(skipped)}（无数据/限流）" if skipped else ""
                     status.update(
-                        label=f"✅ 扫描完成 · 最新日期 {latest} · 今日 {len(new_signals)} 条轮动信号",
+                        label=(f"✅ 扫描完成 · 最新日期 {latest} · "
+                               f"今日 {len(new_signals)} 条轮动信号{skip_str}"),
                         state="complete",
                     )
             except Exception as e:
@@ -69,7 +76,7 @@ st.markdown("---")
 snapshots = common.load_snapshots()
 signals = common.load_signals(days=30)
 n_events = common.count_events()
-has_rs = [s for s in snapshots if s.get("rs_ratio") is not None and s.get("symbol") != "SPY"]
+has_rs = common.rs_snapshots(snapshots)
 
 # 关键指标卡片
 col1, col2, col3, col4 = st.columns(4)
@@ -89,12 +96,17 @@ st.markdown("---")
 left, right = st.columns([3, 2])
 
 with left:
-    st.subheader("版块相对强度轮动图 (RRG)")
-    if has_rs:
-        fig = render_rrg(has_rs)
+    st.subheader("版块相对强度轮动图（最近 10 天轨迹）")
+    trail_histories = common.load_all_sector_histories(days=10)
+    trail_valid, trail_dropped = common.filter_valid_histories(trail_histories)
+    if trail_valid:
+        fig, _ = render_rrg_trail(trail_histories, trail_days=10)
         st.plotly_chart(fig, width="stretch")
+        dropped_msg = common.format_dropped(trail_dropped)
+        if dropped_msg:
+            st.caption(dropped_msg)
     else:
-        st.warning("暂无 RS 数据。请先运行: `PYTHONPATH=. .venv/bin/python src/pipeline.py --mode sector`")
+        st.warning("暂无 RS 历史数据。请先点上方「立即扫描」按钮（需连续多日积累快照才有轨迹）")
 
 with right:
     st.subheader("最新轮动信号")
@@ -102,10 +114,17 @@ with right:
         for r in signals[:5]:
             conf = f" · {r['confidence']}" if r.get("confidence") else ""
             low = " · 低置信度" if r.get("confidence") == "低" else ""
+            # 概率字段可为 None（事件库无相似样本），缺值显 N/A 而非 crash
+            prob = r.get("probability")
+            prob_str = f"{prob*100:.0f}%" if prob is not None else "N/A"
+            dur = r.get("avg_duration")
+            dur_str = f"{dur}天" if dur is not None else "N/A"
+            amp = r.get("avg_amplitude")
+            amp_str = f"±{amp:.1f}%" if amp is not None else "N/A"
             st.markdown(
                 f"**{r['date']}**  {r['from_sector']} → {r['to_sector']}  \n"
-                f"持续概率 **{r['probability']*100:.0f}%** · 均持续 {r['avg_duration']}天 · "
-                f"±{r['avg_amplitude']:.1f}% · 样本 {r['sample_size']}{conf}{low}"
+                f"持续概率 **{prob_str}** · 均持续 {dur_str} · "
+                f"{amp_str} · 样本 {r.get('sample_size') or 0}{conf}{low}"
             )
             st.caption("")
     else:
@@ -115,9 +134,6 @@ st.markdown("---")
 
 # 各版块状态速览
 st.subheader("各版块当前状态")
-if has_rs:
-    df = pd.DataFrame(has_rs)
-    df["象限"] = df.apply(lambda r: quadrant(r.get("rs_ratio"), r.get("rs_momentum")), axis=1)
-    show = ["date", "symbol", "sector", "象限", "close", "rs_ratio", "rs_momentum", "vol_zscore"]
-    st.dataframe(df[[c for c in show if c in df.columns]], width="stretch", hide_index=True)
-    st.caption(f"数据日期: {has_rs[0].get('date', '未知')}")
+rs_list = common.render_sector_table(has_rs)
+if rs_list:
+    st.caption(f"数据日期: {common.latest_snapshot_date(rs_list)}")

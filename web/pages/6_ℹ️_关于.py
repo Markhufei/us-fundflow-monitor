@@ -11,7 +11,7 @@ st.markdown("""
 - **不生成模拟数据**：所有数值来自真实行情，概率来自真实历史回测
 """)
 
-st.header("监控版块（11 个 SPDR ETF）")
+st.header("监控版块（11 个 SPDR ETF + 太空）")
 st.markdown("""
 | 代号 | 版块 | 代号 | 版块 |
 |------|------|------|------|
@@ -20,7 +20,9 @@ st.markdown("""
 | XLF | 金融 | XLRE | 房地产 |
 | XLV | 医疗 | XLU | 公用事业 |
 | XLY | 可选消费 | XLC | 通信 |
-| XLP | 必需消费 | | |
+| XLP | 必需消费 | UFO | 太空（Procure Space ETF 代理） |
+
+> UFO 为 2019 年成立的太空主题 ETF，非 SPDR 行业系列，历史事件样本较少，概率置信度偏低。
 """)
 
 st.header("指标说明")
