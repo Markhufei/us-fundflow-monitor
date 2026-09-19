@@ -15,7 +15,7 @@
 DAILY_SNAPSHOT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS daily_snapshot (
     date         TEXT NOT NULL,        -- YYYY-MM-DD
-    symbol       TEXT NOT NULL,        -- MU / SNDK / SKHXY / SOXX / SMH
+    symbol       TEXT NOT NULL,        -- MU / SNDK / SOXX / SMH
     close        REAL,                 -- 收盘价
     volume       INTEGER,              -- 成交量
     obv          REAL,                 -- On-Balance Volume
@@ -101,6 +101,27 @@ CREATE TABLE IF NOT EXISTS sector_history_events (
 );
 CREATE INDEX IF NOT EXISTS idx_history_symbol ON sector_history_events(symbol);
 CREATE INDEX IF NOT EXISTS idx_history_momentum ON sector_history_events(rs_momentum);
+"""
+
+# =====================================================================
+# 个股轮动监控表结构（扩展模块：个股 RS vs SPY，与版块同基准可同图对比）
+# =====================================================================
+
+STOCK_SNAPSHOT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS stock_snapshot (
+    date         TEXT NOT NULL,        -- YYYY-MM-DD
+    symbol       TEXT NOT NULL,        -- SKHY / MU / SNDK / AAPL
+    name         TEXT,                 -- 个股名称
+    sector_symbol TEXT,                -- 归属版块 ETF 代号（如 XLK）
+    close        REAL,
+    volume       INTEGER,
+    rs_ratio     REAL,                 -- 相对 SPY 强度（>100 跑赢大盘，与版块同基准）
+    rs_momentum  REAL,                 -- 强度动量（正值=强度上升）
+    mfi          REAL,                 -- Money Flow Index（复用 flow_indicators）
+    cmf          REAL,                 -- Chaikin Money Flow
+    vol_zscore   REAL,                 -- 成交量 Z-Score
+    PRIMARY KEY (date, symbol)
+);
 """
 
 # =====================================================================

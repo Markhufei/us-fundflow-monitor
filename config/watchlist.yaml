@@ -19,12 +19,8 @@ watchlist:
       exchange: NASDAQ
       category: stock
       note: "2025-02 从 WDC 分拆上市，历史数据不足 1 年，均量计算需降级"
-    - symbol: SKHXY
-      name: SK海力士 OTC 存托凭证
-      exchange: OTC
-      category: stock
-      fallback_symbol: "000660.KS"
-      note: "韩股 000660.KS 的美股 ADR，流动性低，数据稀疏时 fallback 到韩股"
+    # SKHXY (OTC 存托凭证) 已于 2026-09-01 移除: Twelve Data 免费版不支持 OTC，从未成功采集（DB 0 行）。
+    # SK 海力士监控由 sector_stocks 的 SKHY（纳斯达克 ADR）覆盖。
 
   etfs:
     - symbol: SOXX
@@ -75,21 +71,43 @@ sector_etfs:
     - { symbol: XLRE, sector: 房地产 }
     - { symbol: XLU,  sector: 公用事业 }
     - { symbol: XLC,  sector: 通信 }
+    - { symbol: UFO,  sector: 太空 }   # 2026-08-17 新增: Procure Space ETF，纯太空/卫星概念（非 SPDR，2019 年成立，历史事件样本少）
 
 # 版块轮动判定阈值
 sector_thresholds:
-  rs_momentum_cross: 0.0        # RS-Momentum 上穿此值 -> 转强候选
-  rs_ratio_cross: 100.0         # RS-Ratio 上穿此值 -> 强势确认
+  rs_momentum_cross: 0.0        # RS-Momentum 上穿此值 -> 转强候选（sector_detector 读此值）
+  rs_ratio_cross: 100.0         # RS-Ratio 上穿此值 -> 强势确认（sector_detector 读此值）
   vol_confirm_zscore: 1.5       # 量能确认（当日 vol_zscore > 此值）
-  vol_high_zscore: 2.5          # 量能异常（单独告警）
+  momentum_confirm_days: 2      # 去抖: RS-Mom 同向连续 N 天才算确认交叉（08-31 回测定参）
+  momentum_tol_abs: 0.5         # 概率匹配绝对容差 ±0.5（类型过滤后匹配样本中位 23）
   prob_min_sample: 10           # 概率查询最小样本（低于此值标"低置信度"）
   prob_high_sample: 30          # 高置信度样本阈值
-  sustained_days: 10            # "持续"定义：超额收益>0 的天数阈值
-  sustained_amplitude: 0.03     # "持续"定义：累计超额收益幅度阈值 3%
+  sustained_amplitude: 0.02     # "持续"定义：事件后 20 交易日超额收益 >= 2%（基准率 22.8%；
+                                #   旧定义 dur>=10 且 ret10>=3% 基准率仅 4.8%，概率锁死低区间，已废）
+# 注: vol_high_zscore 已删除（全项目零引用；量能异常告警由 anomaly_detector 硬编码 2.0/1.5）
+
+# ===== 个股轮动监控（RS vs SPY，与版块同基准；2026-08-11 新增）=====
+# 注意: SKHY 是 2026 年纳斯达克新上市的海力士 ADR（非老 watchlist 里的 OTC 凭证 SKHXY）
+sector_stocks:
+  - { symbol: SKHY, name: "SK海力士 ADR", sector_symbol: XLK }
+  - { symbol: MU,   name: "美光科技",     sector_symbol: XLK }
+  - { symbol: SNDK, name: "闪迪 SanDisk", sector_symbol: XLK }
+  - { symbol: AAPL, name: "苹果 Apple",   sector_symbol: XLK }
+  - { symbol: SPCX, name: "SpaceX",      sector_symbol: UFO }   # 2026-08-17 新增: 用户提供代码，待采集验证（外部源未能确认）
+  # 2026-08-29 新增: 美股七姐妹（AAPL 原已在列）
+  - { symbol: MSFT,  name: "微软 Microsoft",  sector_symbol: XLK }
+  - { symbol: NVDA,  name: "英伟达 NVIDIA",   sector_symbol: XLK }
+  - { symbol: GOOGL, name: "谷歌 Alphabet",   sector_symbol: XLC }
+  - { symbol: META,  name: "Meta 平台",       sector_symbol: XLC }
+  - { symbol: AMZN,  name: "亚马逊 Amazon",   sector_symbol: XLY }
+  - { symbol: TSLA,  name: "特斯拉 Tesla",    sector_symbol: XLY }
 
 # 版块计算周期
+# 2026-08-31 回测定参（2025-10-01~2026-08-31, 扣 0.1%/笔, 5 对含 XLK/XLE/XLF vs SPY）:
+#   P10 切换 37-55 次/年且 4/5 对净收益最差（whipsaw）；P30+去抖2天 切换 9-17 次、
+#   版块对平均净收益最优。建库脚本与 detect_rotation 共读本配置，改这里两边同步生效。
 sector_periods:
-  rs_ratio_period: 10           # RS-Ratio EMA 周期（日线，RRG 标准）
-  rs_momentum_period: 10        # RS-Momentum ROC 周期
-  sector_hist_days: 60          # 日常采集历史天数
+  rs_ratio_period: 30           # RS-Ratio 归一化窗口（日线）
+  rs_momentum_period: 30        # RS-Momentum ROC 周期（与归一化窗口同值，JdK 惯例）
+  sector_hist_days: 120         # 日常采集历史天数（需 >= 2×period + 去抖余量）
   backtest_years: 25            # 事件库回测年数（2000-2026）

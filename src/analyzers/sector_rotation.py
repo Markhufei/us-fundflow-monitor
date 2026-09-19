@@ -3,7 +3,8 @@
 参考: AdroitAnandAI/RRG-Sector-Rotation-India 的 JdK 标准公式（调研中算法文档最详尽项目）。
 
 RS-Ratio = 100 * (sector_close / spy_close) / rolling_mean(sector_close / spy_close, period)
-  >100 表示版块跑赢大盘
+  >100 表示相对强度处于自身滚动均值上方（相对自身趋势转强）；
+  不等于跑赢 SPY——比值 0.90 升至 0.95（仍跑输大盘）时 RS-Ratio 同样 >100
 RS-Momentum = 100 * (RS-Ratio / RS-Ratio.shift(period) - 1)
   正值表示强度上升（资金偏好转入该版块）
 

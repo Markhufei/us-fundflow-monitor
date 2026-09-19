@@ -18,7 +18,8 @@ from typing import List, Dict, Optional
 
 _BASE = "https://api.twelvedata.com"
 _TIMEOUT = 15
-_REQUEST_DELAY = 0.3  # 免费 800/day，保守间隔
+_REQUEST_DELAY = 8.0  # 免费档 8 req/min：sector 模式 20+ 请求连发，0.3s 间隔必撞每分钟限流
+_RETRY_BACKOFFS = (10, 30)  # 429 退避重试间隔（秒）
 
 
 def has_key() -> bool:
@@ -27,18 +28,35 @@ def has_key() -> bool:
 
 
 def _get(params: dict) -> Optional[dict]:
-    """带 key 的 GET 请求，返回 JSON 或 None（无 key/失败）。"""
+    """带 key 的 GET 请求，返回 JSON 或 None（无 key/失败）。
+
+    HTTP 429 或 JSON code=429（限流）按 _RETRY_BACKOFFS 退避重试，仍失败返回 None；
+    其他异常维持原行为直接返回 None（由上层降级 yfinance）。
+    """
     key = os.environ.get("TWELVEDATA_API_KEY")
     if not key:
         return None
     params = {**params, "apikey": key}
-    try:
-        time.sleep(_REQUEST_DELAY)
-        r = requests.get(_BASE + "/time_series", params=params, timeout=_TIMEOUT)
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        return None
+    for attempt in range(len(_RETRY_BACKOFFS) + 1):
+        try:
+            time.sleep(_REQUEST_DELAY)
+            r = requests.get(_BASE + "/time_series", params=params, timeout=_TIMEOUT)
+            if r.status_code == 429:
+                if attempt < len(_RETRY_BACKOFFS):
+                    time.sleep(_RETRY_BACKOFFS[attempt])
+                    continue
+                return None
+            r.raise_for_status()
+            data = r.json()
+            if data.get("code") == 429:
+                if attempt < len(_RETRY_BACKOFFS):
+                    time.sleep(_RETRY_BACKOFFS[attempt])
+                    continue
+                return None
+            return data
+        except Exception:
+            return None
+    return None
 
 
 def _to_float(v):

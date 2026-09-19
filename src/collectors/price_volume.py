@@ -3,6 +3,7 @@
 优先 Twelve Data（需 TWELVEDATA_API_KEY，免费 800 req/天），fallback yfinance（Yahoo IP 级限流风险）
 """
 import time
+import pandas as pd
 import yfinance as yf
 from typing import List, Dict, Optional
 
@@ -49,13 +50,19 @@ def collect(symbol: str, days: int = 30, fallback_symbol: Optional[str] = None) 
                 typical_price = (row["High"] + row["Low"] + row["Close"]) / 3
                 vwap = typical_price
 
+            # NaN 判空：pandas 缺失值是 NaN 不是 None（int(NaN) 会抛 ValueError）
+            close = None if pd.isna(row["Close"]) else float(row["Close"])
+            high = None if pd.isna(row["High"]) else float(row["High"])
+            low = None if pd.isna(row["Low"]) else float(row["Low"])
+            volume = None if pd.isna(row["Volume"]) else int(row["Volume"])
+
             result.append({
                 "date": date.strftime("%Y-%m-%d"),
                 "symbol": symbol,
-                "close": float(row["Close"]) if row["Close"] is not None else None,
-                "high": float(row["High"]) if row["High"] is not None else None,
-                "low": float(row["Low"]) if row["Low"] is not None else None,
-                "volume": int(row["Volume"]) if row["Volume"] is not None else None,
+                "close": close,
+                "high": high,
+                "low": low,
+                "volume": volume,
                 "vwap": float(vwap)
             })
 

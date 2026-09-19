@@ -12,6 +12,7 @@ from src.schema import (
     SECTOR_SNAPSHOT_SCHEMA,
     SECTOR_ROTATION_EVENTS_SCHEMA,
     SECTOR_HISTORY_EVENTS_SCHEMA,
+    STOCK_SNAPSHOT_SCHEMA,
 )
 
 
@@ -28,6 +29,7 @@ def init_db(db_path: str = "data/fundflow.db"):
     cursor.execute(DAILY_SNAPSHOT_SCHEMA)
     cursor.execute(ALERTS_SCHEMA)
     cursor.execute(SECTOR_SNAPSHOT_SCHEMA)
+    cursor.execute(STOCK_SNAPSHOT_SCHEMA)
     cursor.execute(SECTOR_ROTATION_EVENTS_SCHEMA)
     # SECTOR_HISTORY_EVENTS_SCHEMA 含 CREATE TABLE + 2 个 CREATE INDEX，需 executescript
     cursor.executescript(SECTOR_HISTORY_EVENTS_SCHEMA)
@@ -108,18 +110,23 @@ def load_history(symbol: str, days: int = 30, db_path: str = "data/fundflow.db")
     return list(reversed(result))
 
 
-def store_alerts(alerts: List[Dict[str, Any]], db_path: str = "data/fundflow.db"):
+def store_alerts(alerts: List[Dict[str, Any]], db_path: str = "data/fundflow.db") -> List[Dict[str, Any]]:
     """
-    批量存储提醒数据
+    批量存储提醒数据（幂等：同日同标的同规则不重复插入）
 
     Args:
         alerts: 提醒数据字典列表
         db_path: SQLite 数据库文件路径
+
+    Returns:
+        实际新插入的 alert 列表（已存在被 IGNORE 的不返回），供调用方仅对新告警发通知
     """
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
+    inserted = []
     for alert in alerts:
+        before = conn.total_changes
         cursor.execute("""
             INSERT OR IGNORE INTO alerts (date, symbol, rule, severity, message, value, detail, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -133,9 +140,12 @@ def store_alerts(alerts: List[Dict[str, Any]], db_path: str = "data/fundflow.db"
             alert.get("detail"),
             alert.get("created_at", datetime.now().isoformat())
         ))
+        if conn.total_changes > before:
+            inserted.append(alert)
 
     conn.commit()
     conn.close()
+    return inserted
 
 
 def get_recent_alerts(
@@ -234,6 +244,56 @@ def get_latest_sector_snapshots(db_path: str = "data/fundflow.db") -> List[Dict[
     return [dict(r) for r in rows]
 
 
+def store_stock_snapshot(row: Dict[str, Any], db_path: str = "data/fundflow.db"):
+    """存储个股每日快照（幂等 UPSERT：同日同个股重写不重复）。"""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR REPLACE INTO stock_snapshot
+        (date, symbol, name, sector_symbol, close, volume,
+         rs_ratio, rs_momentum, mfi, cmf, vol_zscore)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        row.get("date"), row.get("symbol"), row.get("name"),
+        row.get("sector_symbol"), row.get("close"), row.get("volume"),
+        row.get("rs_ratio"), row.get("rs_momentum"),
+        row.get("mfi"), row.get("cmf"), row.get("vol_zscore"),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def load_stock_history(symbol: str, days: int = 60, db_path: str = "data/fundflow.db") -> List[Dict[str, Any]]:
+    """加载某个股历史快照（升序：旧->新）。"""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM stock_snapshot WHERE symbol = ? ORDER BY date DESC LIMIT ?",
+        (symbol, days),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return list(reversed([dict(r) for r in rows]))
+
+
+def get_latest_stock_snapshots(db_path: str = "data/fundflow.db") -> List[Dict[str, Any]]:
+    """获取每个个股的最新一条快照。"""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT s.* FROM stock_snapshot s
+        INNER JOIN (
+            SELECT symbol, MAX(date) AS max_date FROM stock_snapshot GROUP BY symbol
+        ) m ON s.symbol = m.symbol AND s.date = m.max_date
+        ORDER BY s.symbol
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def store_history_events(events: List[Dict[str, Any]], db_path: str = "data/fundflow.db"):
     """批量存储历史事件库（建库用，非幂等；重建前应先 DELETE）。"""
     conn = sqlite3.connect(db_path)
@@ -255,30 +315,33 @@ def store_history_events(events: List[Dict[str, Any]], db_path: str = "data/fund
 
 
 def query_history_events(symbol: str, rs_momentum: Optional[float],
-                         momentum_tol: float = 0.2,
-                         db_path: str = "data/fundflow.db") -> List[Dict[str, Any]]:
-    """查询相似历史事件（同版块 + RS-Momentum 量级相近 ±momentum_tol）。
+                         momentum_tol: float = 0.5,
+                         db_path: str = "data/fundflow.db",
+                         trigger_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    """查询相似历史事件（同版块 + 同触发类型 + RS-Momentum 绝对容差 ±momentum_tol）。
 
-    用于概率查询：新事件触发时找历史相似事件。
-    rs_momentum 可能为 None，此时返回该 symbol 全部事件。
+    2026-09-01 方法学重做:
+      - momentum_tol 由相对容差（±20%）改为绝对区间（如 0.5 = ±0.5）。
+        旧相对容差在近 0 交叉时窗口塌缩（momentum_cross 事件 rs_momentum 中位数仅 0.54，
+        ±20% 即 ±0.11），匹配样本中位数跌至 5。
+      - 新增 trigger_type 过滤：库内 84% 为 rs_cross（无量能确认），不过滤会跨类型
+        污染 momentum_cross 查询（实测预测概率≈4.8% 基准率，无判别力）。
+        None 不限类型（仅测试/统计用，生产查询必须传具体类型）。
+
+    rs_momentum 为 None 时返回该 symbol（可再按 trigger_type 过滤）的全部事件。
     """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    if rs_momentum is None:
-        cursor.execute(
-            "SELECT * FROM sector_history_events WHERE symbol = ?",
-            (symbol,),
-        )
-    else:
-        # 容差按绝对量级计算（避免负值翻转）
-        span = abs(rs_momentum) * momentum_tol
-        lo = rs_momentum - span
-        hi = rs_momentum + span
-        cursor.execute(
-            "SELECT * FROM sector_history_events WHERE symbol = ? AND rs_momentum BETWEEN ? AND ?",
-            (symbol, lo, hi),
-        )
+    sql = "SELECT * FROM sector_history_events WHERE symbol = ?"
+    params: list = [symbol]
+    if trigger_type is not None:
+        sql += " AND trigger_type = ?"
+        params.append(trigger_type)
+    if rs_momentum is not None:
+        sql += " AND rs_momentum BETWEEN ? AND ?"
+        params.extend([rs_momentum - momentum_tol, rs_momentum + momentum_tol])
+    cursor.execute(sql, params)
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
