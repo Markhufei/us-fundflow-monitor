@@ -118,11 +118,13 @@ def test_compare():
 
 def test_notify_write_log(tmp_path):
     """测试通知写日志（不实际发系统通知）。"""
+    # severity=LOW < min_severity=MEDIUM：本测试只验证日志写入，
+    # 低于门槛不发 macOS 系统通知（原先 HIGH 每次 pytest 真实弹通知）
     alert = {
         "date": "2026-07-21",
         "symbol": "MU",
         "rule": "volume_spike",
-        "severity": SEVERITY_HIGH,
+        "severity": SEVERITY_LOW,
         "message": "成交量异常放大",
         "value": 2.5,
     }

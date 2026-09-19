@@ -4,7 +4,7 @@
 所有测试用 tmp_path 隔离，不依赖真实数据。
 """
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.storage import store
 
@@ -136,8 +136,10 @@ def test_get_rotation_events_recent(tmp_path):
     db = str(tmp_path / "t.db")
     store.init_db(db)
     ts = datetime.now().isoformat()
+    # 动态日期: 硬编码日期会随时间滑出 get_rotation_events 的 30 天窗口（时间炸弹）
+    event_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     store.store_rotation_events([
-        {"date": "2026-08-10", "from_sector": "科技", "to_sector": "能源",
+        {"date": event_date, "from_sector": "科技", "to_sector": "能源",
          "to_symbol": "XLE", "probability": 0.7, "avg_duration": 18, "avg_amplitude": 8.0,
          "sample_size": 40, "confidence": "高", "severity": "HIGH",
          "message": "m1", "created_at": ts},

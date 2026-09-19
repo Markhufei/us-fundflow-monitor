@@ -195,7 +195,7 @@ tests/                         pytest 测试套件
 
 ```bash
 # 1. clone 仓库
-git clone https://github.com/<用户名>/us-fundflow-monitor.git
+git clone https://github.com/Markhufei/us-fundflow-monitor.git
 cd us-fundflow-monitor
 
 # 2. 建虚拟环境 + 装依赖

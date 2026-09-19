@@ -108,16 +108,27 @@ web/app.py                Streamlit 多页面仪表盘（总览/RRG/信号/事�
 
 ## 版块轮动监控（Sector Rotation）
 
-基于 11 个 SPDR 版块 ETF（XLK XLE XLF XLV XLY XLP XLI XLB XLRE XLU XLC）+ SPY 基准，
-检测大资金在版块间的移仓，给出持续概率与历史波动幅度/持续时间。
+基于 11 个 SPDR 版块 ETF（XLK XLE XLF XLV XLY XLP XLI XLB XLRE XLU XLC）+ UFO（太空，
+2019 年成立）+ SPY 基准，检测大资金在版块间的移仓，给出持续概率与历史波动幅度/持续时间。
 
 ### 原理与反幻觉声明
 
 - **数据源**：Twelve Data API（免费 800 req/天）拉取 ETF 日线量价，yfinance 作 fallback；不虚构数据
-- **RS-Ratio** = `100 × (版块/SPY) / (版块/SPY).rolling(period).mean()`（JdK 标准公式）
+- **RS-Ratio** = `100 × (版块/SPY) / (版块/SPY).rolling(period).mean()`（JdK 风格公式）。
+  注意：RS-Ratio > 100 表示相对强度处于自身滚动均值**上方**（相对自身的趋势），不等于跑赢 SPY
 - **RS-Momentum** = `100 × (RS-Ratio / RS-Ratio.shift(period) − 1)`
-- **持续概率**：基于自建历史事件库（3187 事件，2006–2026，约 20 年回测）的条件概率统计，
-  非主观打分；样本 <10 自动标「低置信度」，样本 ≥30 为高置信度
+- **周期与去抖**（2026-08-31 回测定参，2025-10-01~2026-08-31 扣 0.1%/笔，5 对含 XLK/XLE/XLF vs SPY）：
+  period=30（旧 10 天切换 37-55 次/年 whipsaw 严重）；上穿需连续 2 天确认。周期/去抖在
+  `config/watchlist.yaml` 的 `sector_periods` / `sector_thresholds`，检测与建库脚本共用
+- **量能 Z-Score**：基线窗口不含当日（放量日不抬高自身分母），min_periods=20，
+  当日量偏离前 20 日中位数 10 倍以上视为坏数据置 NaN（07-28 型部分数据日守卫）
+- **持续概率**：基于自建历史事件库（1306 事件，2006–2026，12 版块全覆盖）的条件概率统计，
+  非主观打分。"持续" = 事件后 20 交易日超额收益 ≥ 2%（基准率 24.7%；旧定义基准率仅 4.8%，
+  概率被锁死在低区间，已废）。匹配限定同版块 + 同触发类型 + RS-Momentum 绝对容差 ±0.5，
+  超额收益以事件次日收盘（T+1）为基准，与实盘可执行时点一致
+- **诚实性边界**：判别力复测显示该概率接近条件基准率（分桶校准在 [20%,40%) 区间良好，
+  更高区间样本不足），应作历史统计参考而非预测；样本 <30 附 Wilson 95% 置信区间，
+  样本 <10 标「低置信度」；severity 仅在概率 >0.6 且高置信（样本 ≥30）时为 HIGH
 - **RS 指标本质是滞后确认**（基于历史量价推算），非领先预警；概率反映历史相似情境的统计规律，不保证未来重演
 
 ### 使用
@@ -126,18 +137,28 @@ web/app.py                Streamlit 多页面仪表盘（总览/RRG/信号/事�
 # 单次扫描（美股收盘后运行）
 PYTHONPATH=. .venv/bin/python3 src/pipeline.py --config config/watchlist.yaml --mode sector
 
-# 重建历史事件库（首次部署或季度刷新）
+# 重建历史事件库（首次部署或季度刷新；需 .env 配置 TWELVEDATA_API_KEY）
 PYTHONPATH=. .venv/bin/python3 scripts/build_sector_event_library.py
+# 构建日志（含跳过原因）: logs/event_library_build.log；版块覆盖缺口时非零退出
 
-# 启动 Web 面板（多页面：总览 / RRG轮动 / 轮动信号 / 历史事件库 / 版块详情 / 回测验证 / 关于）
-.venv/bin/streamlit run web/app.py
+# 参数调整后回测验证（周期 × 去抖对比表）
+.venv/bin/python3 scripts/backtest_apple_storage_rotation.py
+
+# 面板已由 launchd 持久运行（开机自启 + 崩溃自动重启）
+# 浏览器访问 http://localhost:8501 即可，无需终端操作
+
+# 管理（如需）：
+launchctl load ~/Library/LaunchAgents/com.hsf.streamlit.plist      # 启动
+launchctl unload ~/Library/LaunchAgents/com.hsf.streamlit.plist    # 停止
+launchctl list | grep com.hsf.streamlit                            # 状态
+tail -f logs/streamlit.log                                         # 日志
 ```
 
 ### 输出示例
 
 ```
-[2026-08-11] 版块轮动: 能源->科技 持续概率62% 历史均持续12天 ±4.1% 样本41
-[2026-08-11] 版块轮动: 金融->公用事业 持续概率18% 历史均持续3天 ±1.2% 样本33 低置信度
+[2026-08-11] 版块轮动: 能源->科技 持续概率62% CI95[48%~74%] 历史均持续12天 +4.1% 样本41
+[2026-08-11] 版块轮动: 金融->公用事业 持续概率18% CI95[8%~35%] 历史均持续3天 -1.2% 样本22 ⚠️低置信度
 ```
 
 cron 每日 06:15（美股收盘后）自动扫描，轮动信号通过 macOS 通知 + Streamlit Web 面板双通道输出。
