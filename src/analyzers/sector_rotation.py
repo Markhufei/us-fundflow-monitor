@@ -29,7 +29,7 @@ def calc_rs_ratio(sector_close: pd.Series, spy_close: pd.Series, period: int = 1
         period: 滚动均值周期
 
     Returns:
-        RS-Ratio 序列（前 period-1 个为 NaN）；>100 跑赢大盘
+        RS-Ratio 序列（前 period-1 个为 NaN）；>100 表示相对强度处于自身滚动均值上方，不等于跑赢 SPY
     """
     if len(sector_close) != len(spy_close):
         raise ValueError(f"长度不一致: sector={len(sector_close)} spy={len(spy_close)}")

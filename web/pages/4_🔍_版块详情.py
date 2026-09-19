@@ -47,13 +47,13 @@ st.markdown("---")
 
 # 概率查询
 st.subheader("概率查询")
-st.caption("输入假设的 RS-Momentum 值，查历史相似事件（±20%）的持续概率")
+st.caption("输入假设的 RS-Momentum 值，查历史相似事件（同版块，RS-Momentum 绝对容差 ±0.5，未区分触发类型，仅供参考）的持续概率")
 rm = st.number_input("RS-Momentum 值", -50.0, 50.0, 5.0, 0.5)
 similar = common.query_history(sym, rs_momentum=rm)
 if similar:
     sdf = pd.DataFrame(similar)
     n = len(sdf)
-    sustained = int(((sdf["duration_days"] >= 10) & (sdf["ret_10d"] >= 0.03)).sum())
+    sustained = int((sdf["ret_20d"] >= 0.02).sum())
     prob = sustained / n * 100
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -70,4 +70,4 @@ if similar:
     else:
         st.info(f"置信度: {conf}（样本 {n}）")
 else:
-    st.warning(f"无 RS-Momentum ∈ [{rm*0.8:.2f}, {rm*1.2:.2f}] 的历史事件")
+    st.warning(f"无 RS-Momentum ∈ [{rm-0.5:.2f}, {rm+0.5:.2f}] 的历史事件")

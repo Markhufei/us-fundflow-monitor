@@ -186,7 +186,7 @@ def render_rs_chart(hist_df, height=420):
     fig.add_hline(y=100, line_dash="dash", line_color="#1f77b4")
     fig.add_hline(y=0, line_dash="dash", line_color="#ff7f0e")
     fig.update_layout(
-        yaxis=dict(title="RS-Ratio（>100 跑赢大盘）"),
+        yaxis=dict(title="RS-Ratio（>100 = 相对自身均值上方，非跑赢大盘）"),
         yaxis2=dict(title="RS-Momentum（>0 上升）", overlaying="y", side="right"),
         height=height, hovermode="x unified",
         legend=dict(orientation="h", y=1.1),
@@ -215,14 +215,14 @@ def event_date_span():
 
 
 def history_stats_by_symbol():
-    """各版块事件统计（事件数/平均持续/平均收益/持续概率）。"""
+    """各版块事件统计（事件数/平均持续/平均收益/持续概率）。持续定义 = 事件后 20 交易日超额收益 ≥ 2%（现行标准）。"""
     conn = sqlite3.connect(DB_PATH)
     try:
         df = pd.read_sql(
             """SELECT symbol, sector, COUNT(*) AS 事件数,
                       AVG(duration_days) AS 平均持续天数,
                       AVG(ret_10d) AS 平均10日超额收益,
-                      SUM(CASE WHEN duration_days >= 10 AND ret_10d >= 0.03 THEN 1 ELSE 0 END) AS 持续事件数
+                      SUM(CASE WHEN ret_20d >= 0.02 THEN 1 ELSE 0 END) AS 持续事件数
                FROM sector_history_events
                GROUP BY symbol ORDER BY 事件数 DESC""",
             conn,

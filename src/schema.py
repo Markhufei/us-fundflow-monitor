@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS sector_snapshot (
     sector       TEXT,                 -- 科技 / 能源 / ...（SPY 为 NULL）
     close        REAL,
     volume       INTEGER,
-    rs_ratio     REAL,                 -- 相对 SPY 强度（>100 跑赢大盘）
+    rs_ratio     REAL,                 -- RS-Ratio（>100 = 相对自身均值上方，非跑赢大盘）
     rs_momentum  REAL,                 -- 强度动量（正值=强度上升）
     mfi          REAL,                 -- Money Flow Index（复用 flow_indicators）
     cmf          REAL,                 -- Chaikin Money Flow
