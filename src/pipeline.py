@@ -31,9 +31,13 @@ def load_config(config_path: str = "config/watchlist.yaml") -> Dict[str, Any]:
 
 
 def is_trading_day() -> bool:
-    """判断是否为交易日（简化版：周一到周五）。"""
-    weekday = datetime.now().weekday()  # 0=周一, 4=周五
-    return weekday < 5
+    """判断是否为采集日（简化版：周一到周六）。
+
+    周六也放行: 北京周六 06:00 = 美股周五 18:00 EDT，周五收盘数据已完整；
+    旧逻辑 weekday < 5 导致美股周五收盘系统性延迟到周一才入库。
+    """
+    weekday = datetime.now().weekday()  # 0=周一, 5=周六, 6=周日
+    return weekday < 6
 
 
 def _hist_to_df(hist: List[Dict[str, Any]]) -> pd.DataFrame:
