@@ -92,6 +92,17 @@ def update():
     quarter_date = _parse_quarter_date(filename) or "unknown"
     print(f"最新数据集: {filename} (季度起始 {quarter_date})")
 
+    # 廉价早退（周检 launchd 用）：全部缓存已含该季度则跳过 95MB 下载
+    if os.path.isdir(_CACHE_DIR):
+        cache_files = [f for f in os.listdir(_CACHE_DIR) if f.endswith(".json")]
+        if cache_files and all(
+            any(h.get("date") == quarter_date
+                for h in json.load(open(os.path.join(_CACHE_DIR, f))).get("history", []))
+            for f in cache_files
+        ):
+            print(f"✅ 缓存已含 {quarter_date}（{filename}），无需下载")
+            return
+
     # 读 watchlist
     import yaml
     with open("config/watchlist.yaml") as f:
