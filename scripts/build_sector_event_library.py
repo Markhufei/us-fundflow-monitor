@@ -21,6 +21,7 @@ import sys
 import os
 import time
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # 让 from src 能 import（脚本在 scripts/ 下）
@@ -59,17 +60,57 @@ def _load_config() -> dict:
         return yaml.safe_load(f)
 
 
-def fetch_full_history(symbol: str) -> pd.DataFrame:
-    """拉长历史（约 20 年），优先 Twelve Data（稳定），fallback yfinance（限流风险）。
+def _td_chunk(symbol: str, end_date: str = None) -> list:
+    """Twelve Data 单块拉取（最多 5000 根，end_date 往前翻页用）。"""
+    params = {"symbol": symbol, "interval": "1day", "outputsize": 5000}
+    if end_date:
+        params["end_date"] = end_date
+    data = twelvedata._get(params)
+    if not data or data.get("status") != "ok" or "values" not in data:
+        return []
+    rows = []
+    for r in data["values"]:
+        rows.append({
+            "date": r.get("datetime"),
+            "close": twelvedata._to_float(r.get("close")),
+            "high": twelvedata._to_float(r.get("high")),
+            "low": twelvedata._to_float(r.get("low")),
+            "volume": twelvedata._to_int(r.get("volume")),
+        })
+    rows.reverse()  # 降序转升序
+    return rows
 
-    Twelve Data outputsize 上限 5000 ≈ 20 年交易日，覆盖约 2006-2026。
+
+EARLIEST_CAP = "1998-01-01"   # SPDR 版块 ETF 最早成立日（1998-12）之前的硬下界
+MAX_CHUNKS = 4                # 5000 根/块，4 块 ≈ 79 年，安全上限
+
+
+def fetch_full_history(symbol: str) -> pd.DataFrame:
+    """拉全部可得历史（分页回溯到 ETF 成立日，免费档 start_date/end_date 已实测可用）。
+
+    Twelve Data 单请求 outputsize 上限 5000 ≈ 20 年；用 end_date 翻页取更早数据，
+    2026-09 起事件库从"约 20 年"扩展到 ETF 成立日（多数 SPDR 1998-12 成立）。
     返回 DataFrame（date,close,high,low,volume 升序）。
     """
     # 优先 Twelve Data（本机已配 key，免费 800 req/天，稳定）
     if twelvedata.has_key():
-        data = twelvedata.collect_price_volume(symbol, days=5000)
-        if data and len(data) > 60:
-            df = pd.DataFrame(data)
+        all_rows: list = []
+        end_date = None
+        for _ in range(MAX_CHUNKS):
+            chunk = _td_chunk(symbol, end_date)
+            if not chunk:
+                break
+            all_rows = chunk + all_rows
+            earliest = chunk[0]["date"]
+            if earliest <= EARLIEST_CAP or len(chunk) < 5000:
+                break  # 到底或该块未满（已到成立日）
+            # 下一块取 earliest 前一日（日期字符串比较，避免时区/格式转换）
+            y, m, d = (int(x) for x in earliest.split("-"))
+            prev = (datetime(y, m, d) - timedelta(days=1)).strftime("%Y-%m-%d")
+            end_date = prev
+        if all_rows and len(all_rows) > 60:
+            df = pd.DataFrame(all_rows)
+            print(f"  {symbol}: 分页取史 {len(df)} 天，{df['date'].iloc[0]} ~ {df['date'].iloc[-1]}")
             return df[["date", "close", "high", "low", "volume"]]
 
     # fallback yfinance（IP 级限流风险）
