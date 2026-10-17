@@ -112,11 +112,13 @@ def _check_freshness(db_path: str, config: Dict[str, Any]) -> None:
         d -= timedelta(days=1)
     threshold = d.isoformat()
 
-    for table in ("daily_snapshot", "sector_snapshot"):
+    for table in ("daily_snapshot", "sector_snapshot", "index_snapshot"):
         conn = sqlite3.connect(db_path)
         row = conn.execute(f"SELECT MAX(date) FROM {table}").fetchone()
         conn.close()
         max_date = row[0] if row and row[0] else ""
+        if not max_date:
+            continue  # 新表尚无数据（如 index 模块首日），跳过防误报
         if max_date < threshold:
             notify.send({
                 "date": _expected_data_date(), "symbol": "SYSTEM", "rule": "data_stale",
@@ -127,8 +129,8 @@ def _check_freshness(db_path: str, config: Dict[str, Any]) -> None:
             logger.warning(f"freshness: {table} MAX(date)={max_date} < threshold {threshold}")
 
 
-_LOG_ROTATE_FILES = ("cron_daily.log", "cron_sector.log", "cron_compare2d.log",
-                     "cron_weekly.log", "fundflow.log")
+_LOG_ROTATE_FILES = ("cron_daily.log", "cron_sector.log", "cron_index.log",
+                     "cron_compare2d.log", "cron_weekly.log", "fundflow.log")
 _MAX_LOG_BYTES = 5 * 1024 * 1024
 
 
@@ -176,6 +178,13 @@ def run(config_path: str = "config/watchlist.yaml", mode: str = "daily") -> None
     if mode == "sector":
         ok, skipped = _run_sector(config, db_path)
         logger.info(f"sector 完成 ok={ok} skipped={skipped}")
+        _check_freshness(db_path, config)
+        return
+
+    # 指数观察模式：独立流程（指数本体 yfinance + 代理/杠杆 ETF Twelve Data）
+    if mode == "index":
+        ok, skipped = _run_index(config, db_path)
+        logger.info(f"index 完成 ok={ok} skipped={skipped}")
         _check_freshness(db_path, config)
         return
 
@@ -423,9 +432,158 @@ def _run_sector(config: Dict[str, Any], db_path: str) -> "tuple[bool, List[str]]
     return True, skipped
 
 
+def _run_index(config: Dict[str, Any], db_path: str) -> "tuple[bool, List[str]]":
+    """指数观察扫描: 拉 3 指数(yfinance) + 代理/杠杆 ETF(Twelve Data) -> 算特征 -> 存快照 -> 检测信号 -> 告警。
+
+    指数本体走 index_price.collect_index（Twelve Data 免费档不支持指数）；
+    代理/杠杆 ETF 走 price_volume.collect（Twelve Data 优先）。杠杆 ETF 行只存量价。
+
+    Returns:
+        (ok, skipped): ok=SPY 代理数据成功且完成检测流程；skipped=无数据被跳过的 symbol 清单
+    """
+    from src.collectors import price_volume, index_price
+    from src.analyzers import index_signals, index_detector
+    from src.alerts import notify
+    from src.storage import store
+
+    index_watch = config.get("index_watch", [])
+    thresholds = config.get("index_thresholds", {})
+    periods = config.get("index_periods", {})
+    hist_days = int(periods.get("index_hist_days", 250))
+    pull_days = max(hist_days, 250)  # MA200/regime 需 250 根
+
+    if not index_watch:
+        logger.warning("index_watch 为空，跳过指数扫描")
+        return False, []
+
+    # 代理 ETF 历史（资金流指标来源）+ SPY（regime + RS 基准），去重后一次拉取
+    proxy_syms = {item.get("flow_proxy") for item in index_watch if item.get("flow_proxy")}
+    proxy_syms.add("SPY")
+    hist_map: Dict[str, List[Dict[str, Any]]] = {}
+    for sym in sorted(proxy_syms):
+        h = _drop_partial_tail(price_volume.collect(sym, days=pull_days))
+        hist_map[sym] = h
+        if not h:
+            logger.warning(f"代理 {sym} 数据获取失败")
+
+    spy_hist = hist_map.get("SPY") or []
+    if not spy_hist:
+        logger.warning("SPY 数据获取失败，跳过指数扫描")
+        return False, []
+
+    # SPY regime（收盘 vs MA200，供概率分桶；历史不足 200 天则 None 不分桶）
+    spy_closes = [h.get("close") for h in spy_hist if h.get("close") is not None]
+    spy_above_ma200 = int(spy_closes[-1] > sum(spy_closes[-200:]) / 200) if len(spy_closes) >= 200 else None
+
+    skipped: List[str] = []
+    index_snapshots: List[Dict[str, Any]] = []
+    for item in index_watch:
+        symbol = item["symbol"]
+        name = item.get("name")
+        proxy_sym = item.get("flow_proxy")
+        proxy_hist = hist_map.get(proxy_sym) if proxy_sym else None
+
+        # 指数本体（yfinance）
+        idx_hist = _drop_partial_tail(index_price.collect_index(symbol, days=pull_days))
+        if not idx_hist:
+            logger.warning(f"{symbol} 指数数据获取失败，跳过")
+            skipped.append(symbol)
+            continue
+        if not proxy_hist:
+            logger.warning(f"{symbol} 代理 {proxy_sym} 无数据，资金流指标缺失，仅存价量特征")
+            proxy_hist = []
+
+        features = index_signals.build_features(
+            idx_hist, proxy_hist, spy_hist,
+            benchmark="SPY" if item.get("rs_framework") else None,
+            periods=periods)
+        if features.empty:
+            skipped.append(symbol)
+            continue
+        latest = features.iloc[-1]
+        snap = {
+            "date": latest["date"], "symbol": symbol, "name": name, "kind": "index",
+            "close": _num(latest.get("close")),
+            "volume": _int_or_none(latest.get("volume")),
+            "ret_1d": _num(latest.get("ret_1d")),
+            "dd20": _num(latest.get("dd20")), "dd50": _num(latest.get("dd50")),
+            "ma20": _num(latest.get("ma20")), "ma50": _num(latest.get("ma50")),
+            "above_ma200": _int_or_none(latest.get("above_ma200")),
+            "rs_ratio": _num(latest.get("rs_ratio")),
+            "rs_momentum": _num(latest.get("rs_momentum")),
+            "cmf": _num(latest.get("cmf")), "mfi": _num(latest.get("mfi")),
+            "vol_zscore": _num(latest.get("vol_zscore")),
+        }
+        store.store_index_snapshot(snap, db_path)
+        index_snapshots.append(snap)
+        logger.info(f"已存储 {symbol} snapshot dd20={snap.get('dd20')} rs_momentum={snap.get('rs_momentum')}")
+
+        # 代理 ETF 快照行（资金流指标的量价依据，供面板展示）
+        if proxy_hist:
+            p_latest = proxy_hist[-1]
+            store.store_index_snapshot({
+                "date": p_latest["date"], "symbol": proxy_sym,
+                "name": f"{name}代理", "kind": "proxy",
+                "close": _num(p_latest.get("close")),
+                "volume": _int_or_none(p_latest.get("volume")),
+            }, db_path)
+
+        # 杠杆 ETF 行（只存量价，供面板展示）
+        for key, kind_name in (("leveraged_long", "做多"), ("leveraged_short", "做空")):
+            lev_sym = item.get(key)
+            if not lev_sym:
+                continue
+            lev_hist = _drop_partial_tail(price_volume.collect(lev_sym, days=5))
+            if not lev_hist:
+                logger.warning(f"杠杆 ETF {lev_sym} 无数据，跳过")
+                skipped.append(lev_sym)
+                continue
+            lev_latest = lev_hist[-1]
+            store.store_index_snapshot({
+                "date": lev_latest["date"], "symbol": lev_sym,
+                "name": f"{name}{kind_name}杠杆", "kind": "leveraged",
+                "close": _num(lev_latest.get("close")),
+                "volume": _int_or_none(lev_latest.get("volume")),
+            }, db_path)
+
+    # 检测信号: 对 DB 历史跑同一 identify_index_events，过滤当日（与建库一套代码）
+    alerts = index_detector.detect_index_signals(index_snapshots, db_path, thresholds, periods,
+                                                 spy_above_ma200=spy_above_ma200)
+    if alerts:
+        created_at = datetime.now().isoformat()
+        for a in alerts:
+            a["created_at"] = created_at
+        # alerts 表 UNIQUE(date,symbol,rule) 幂等，仅对新插入的告警发通知
+        new_alerts = store.store_alerts(alerts, db_path)
+        for a in new_alerts:
+            notify.send(a, config)
+            logger.info(f"index alert: {a['symbol']} {a['rule']} - {a['message']}")
+        if not new_alerts:
+            logger.info(f"index alert: {len(alerts)} 条均为已存在告警，未重复通知")
+    else:
+        logger.info("指数观察: 无信号")
+
+    # 所有指数本体均拉取失败时一次快照都没存（镜像 sector 的 SPY 失败语义）
+    return bool(index_snapshots), skipped
+
+
+def _num(v) -> "float | None":
+    """NaN/None -> None，其余转 float（SQLite 无 NaN 类型，显式转换防存入垃圾值）。"""
+    try:
+        return None if pd.isna(v) else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(v) -> "int | None":
+    """NaN/None -> None，其余转 int（volume/above_ma200 等整型列）。"""
+    f = _num(v)
+    return int(f) if f is not None else None
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="美股资金流动监控")
     parser.add_argument("--config", default="config/watchlist.yaml", help="配置文件路径")
-    parser.add_argument("--mode", default="daily", choices=["daily", "compare2d", "weekly", "sector"], help="运行模式")
+    parser.add_argument("--mode", default="daily", choices=["daily", "compare2d", "weekly", "sector", "index"], help="运行模式")
     args = parser.parse_args()
     run(args.config, args.mode)

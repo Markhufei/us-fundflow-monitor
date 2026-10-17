@@ -12,6 +12,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 
+from src.schema import INDEX_TRIGGER_LABELS
 from src.storage import store
 
 # 锚定项目根（与 _load_env 同款 dirname 模式），避免手动从其他目录
@@ -37,6 +38,12 @@ STOCKS = {
     "GOOGL": "谷歌 Alphabet", "META": "Meta 平台",
     "AMZN": "亚马逊 Amazon", "TSLA": "特斯拉 Tesla",
 }
+
+# 三大指数 + 中文名（指数观察模块）
+INDEXES = {"GSPC": "标普500", "IXIC": "纳斯达克综合", "DJI": "道琼斯工业"}
+
+# 指数触发类型标签（与 src.schema.INDEX_TRIGGER_LABELS 同源，勿单边改动）
+TRIGGER_LABELS = INDEX_TRIGGER_LABELS
 
 
 def _load_env():
@@ -121,6 +128,106 @@ def load_stock_history(symbol, days=120):
 def load_all_stock_histories(days=30):
     """所有个股历史快照 {symbol: [snapshot,...]}（升序，旧->新），用于个股 RRG 轨迹图。"""
     return {sym: store.load_stock_history(sym, days=days, db_path=DB_PATH) for sym in STOCKS}
+
+
+# =====================================================================
+# 指数观察模块加载函数
+# =====================================================================
+
+@st.cache_data(ttl=300)
+def load_index_snapshots():
+    """最新指数快照（指数本体 + 代理 + 杠杆 ETF，含 kind 列）。"""
+    return store.get_latest_index_snapshots(DB_PATH)
+
+
+@st.cache_data(ttl=300)
+def load_index_history(symbol, days=250):
+    """单指数/ETF 历史快照（升序，旧->新），用于回撤时间线。"""
+    return store.load_index_history(symbol, days=days, db_path=DB_PATH)
+
+
+@st.cache_data(ttl=300)
+def load_index_alerts(days=30):
+    """最近指数信号（alerts 表 rule LIKE 'index_%'）。"""
+    return store.get_index_alerts(days=days, db_path=DB_PATH)
+
+
+@st.cache_data(ttl=300)
+def count_index_events():
+    """指数历史事件库总数。"""
+    return store.count_index_events(DB_PATH)
+
+
+@st.cache_data(ttl=300)
+def load_index_events(symbol=None, trigger_type=None, limit=300):
+    """指数历史事件列表（按日期倒序，供统计表/明细展示）。"""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        query = ("SELECT event_date, symbol, trigger_type, rs_momentum, vol_zscore, "
+                 "cmf, dd20, ret_5d, ret_10d, ret_20d, ret_60d, max_dd_20d, "
+                 "duration_days, spy_above_ma200 FROM index_history_events")
+        params = []
+        conds = []
+        if symbol:
+            conds.append("symbol = ?")
+            params.append(symbol)
+        if trigger_type:
+            conds.append("trigger_type = ?")
+            params.append(trigger_type)
+        if conds:
+            query += " WHERE " + " AND ".join(conds)
+        query += " ORDER BY event_date DESC LIMIT ?"
+        params.append(limit)
+        return pd.read_sql(query, conn, params=params)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=300)
+def index_event_stats():
+    """各指数 × 触发类型事件统计（事件数/平均持续/平均收益/胜率/平均最大回撤）。
+
+    胜率口径按类型: pullback_start 为 max_dd_20d <= -5% 命中率，
+    capital_withdrawal 为 ret_20d <= -2% 比例，其余为 ret_20d >= 2% 比例
+    （与 query_index_probability 同口径）。
+    """
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        df = pd.read_sql(
+            """SELECT symbol, trigger_type, COUNT(*) AS 事件数,
+                      AVG(duration_days) AS 平均持续天数,
+                      AVG(ret_20d) AS 平均20日收益,
+                      AVG(max_dd_20d) AS 平均最大回撤,
+                      SUM(CASE WHEN trigger_type = 'pullback_start' AND max_dd_20d <= -0.05 THEN 1 ELSE 0 END
+                          + CASE WHEN trigger_type = 'capital_withdrawal' AND ret_20d <= -0.02 THEN 1 ELSE 0 END
+                          + CASE WHEN trigger_type NOT IN ('pullback_start', 'capital_withdrawal')
+                                 AND ret_20d >= 0.02 THEN 1 ELSE 0 END) AS 命中数
+               FROM index_history_events
+               GROUP BY symbol, trigger_type ORDER BY symbol, 事件数 DESC""",
+            conn,
+        )
+        if df.empty:
+            return df
+        df["指数"] = df["symbol"].map(INDEXES).fillna(df["symbol"])
+        df["触发类型"] = df["trigger_type"].map(INDEX_TRIGGER_LABELS).fillna(df["trigger_type"])
+        df["平均20日收益%"] = (df["平均20日收益"] * 100).round(2)
+        df["平均最大回撤%"] = (df["平均最大回撤"] * 100).round(2)
+        df["命中率%"] = (df["命中数"] / df["事件数"] * 100).round(1)
+        return df.drop(columns=["平均20日收益", "平均最大回撤"])
+    finally:
+        conn.close()
+
+
+def query_index_probability(symbol, trigger_type, spy_above_ma200=None):
+    """条件概率查询（读当前阈值配置透传 index_signals；参数组合多不缓存）。"""
+    import yaml
+    from src.analyzers import index_signals
+    with open(os.path.join(ROOT_DIR, "config", "watchlist.yaml"), encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    return index_signals.query_index_probability(
+        symbol, trigger_type, db_path=DB_PATH,
+        thresholds=cfg.get("index_thresholds", {}),
+        spy_above_ma200=spy_above_ma200)
 
 
 def filter_valid_histories(histories, min_points=2):

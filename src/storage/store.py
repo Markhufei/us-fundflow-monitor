@@ -13,6 +13,8 @@ from src.schema import (
     SECTOR_ROTATION_EVENTS_SCHEMA,
     SECTOR_HISTORY_EVENTS_SCHEMA,
     STOCK_SNAPSHOT_SCHEMA,
+    INDEX_SNAPSHOT_SCHEMA,
+    INDEX_HISTORY_EVENTS_SCHEMA,
 )
 
 
@@ -33,6 +35,9 @@ def init_db(db_path: str = "data/fundflow.db"):
     cursor.execute(SECTOR_ROTATION_EVENTS_SCHEMA)
     # SECTOR_HISTORY_EVENTS_SCHEMA 含 CREATE TABLE + 2 个 CREATE INDEX，需 executescript
     cursor.executescript(SECTOR_HISTORY_EVENTS_SCHEMA)
+    # INDEX_HISTORY_EVENTS_SCHEMA 含 CREATE TABLE + 2 个 CREATE INDEX，需 executescript
+    cursor.executescript(INDEX_SNAPSHOT_SCHEMA)
+    cursor.executescript(INDEX_HISTORY_EVENTS_SCHEMA)
 
     # 迁移：旧 alerts 表无 detail 列则添加（幂等）
     cols = [row[1] for row in cursor.execute("PRAGMA table_info(alerts)").fetchall()]
@@ -399,6 +404,134 @@ def get_rotation_events(days: int = 30, db_path: str = "data/fundflow.db") -> Li
     cursor = conn.cursor()
     cursor.execute(
         "SELECT * FROM sector_rotation_events WHERE date >= date('now', ?) ORDER BY created_at DESC",
+        (f"-{days} days",),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# =====================================================================
+# 指数观察模块存储函数
+# =====================================================================
+
+def store_index_snapshot(row: Dict[str, Any], db_path: str = "data/fundflow.db"):
+    """存储指数/代理/杠杆 ETF 每日快照（幂等 UPSERT：同日同标的重写不重复）。"""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR REPLACE INTO index_snapshot
+        (date, symbol, name, kind, close, volume, ret_1d, dd20, dd50,
+         ma20, ma50, above_ma200, rs_ratio, rs_momentum, cmf, mfi, vol_zscore)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        row.get("date"), row.get("symbol"), row.get("name"), row.get("kind"),
+        row.get("close"), row.get("volume"), row.get("ret_1d"),
+        row.get("dd20"), row.get("dd50"), row.get("ma20"), row.get("ma50"),
+        row.get("above_ma200"), row.get("rs_ratio"), row.get("rs_momentum"),
+        row.get("cmf"), row.get("mfi"), row.get("vol_zscore"),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def load_index_history(symbol: str, days: int = 60, db_path: str = "data/fundflow.db") -> List[Dict[str, Any]]:
+    """加载某指数/ETF 历史快照（升序：旧->新）。"""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM index_snapshot WHERE symbol = ? ORDER BY date DESC LIMIT ?",
+        (symbol, days),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return list(reversed([dict(r) for r in rows]))
+
+
+def get_latest_index_snapshots(db_path: str = "data/fundflow.db") -> List[Dict[str, Any]]:
+    """获取每个 symbol 的最新一条指数快照（指数本体 + 代理 + 杠杆 ETF）。"""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT s.* FROM index_snapshot s
+        INNER JOIN (
+            SELECT symbol, MAX(date) AS max_date FROM index_snapshot GROUP BY symbol
+        ) m ON s.symbol = m.symbol AND s.date = m.max_date
+        ORDER BY s.symbol
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def store_index_history_events(events: List[Dict[str, Any]], db_path: str = "data/fundflow.db"):
+    """批量存储指数历史事件库（建库用，非幂等；重建前应先 DELETE）。"""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    for e in events:
+        cursor.execute("""
+            INSERT INTO index_history_events
+            (event_date, symbol, trigger_type, rs_momentum, vol_zscore, cmf, dd20,
+             ret_5d, ret_10d, ret_20d, ret_60d, max_dd_20d, duration_days, spy_above_ma200)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            e.get("event_date"), e.get("symbol"), e.get("trigger_type"),
+            e.get("rs_momentum"), e.get("vol_zscore"), e.get("cmf"), e.get("dd20"),
+            e.get("ret_5d"), e.get("ret_10d"), e.get("ret_20d"), e.get("ret_60d"),
+            e.get("max_dd_20d"), e.get("duration_days"), e.get("spy_above_ma200"),
+        ))
+    conn.commit()
+    conn.close()
+
+
+def query_index_events(symbol: str, trigger_type: str,
+                       rs_momentum: Optional[float] = None,
+                       momentum_tol: float = 0.5,
+                       spy_above_ma200: Optional[int] = None,
+                       db_path: str = "data/fundflow.db") -> List[Dict[str, Any]]:
+    """查询相似指数历史事件（同指数 + 同触发类型必须匹配）。
+
+    rs_momentum 非 None 时加绝对容差 ±momentum_tol 匹配（仅 sustained_uptrend 用
+    RS 特征；其余类型 RS 特征为 NULL，退化为同 symbol+同类型基准率）。
+    spy_above_ma200 非 None 时按 regime 过滤（分桶回退逻辑在 query_index_probability）。
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    sql = "SELECT * FROM index_history_events WHERE symbol = ? AND trigger_type = ?"
+    params: list = [symbol, trigger_type]
+    if spy_above_ma200 is not None:
+        sql += " AND spy_above_ma200 = ?"
+        params.append(spy_above_ma200)
+    if rs_momentum is not None:
+        sql += " AND rs_momentum BETWEEN ? AND ?"
+        params.extend([rs_momentum - momentum_tol, rs_momentum + momentum_tol])
+    cursor.execute(sql, params)
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def count_index_events(db_path: str = "data/fundflow.db") -> int:
+    """指数历史事件库总条数（建库后验证用）。"""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM index_history_events")
+    n = cursor.fetchone()[0]
+    conn.close()
+    return n
+
+
+def get_index_alerts(days: int = 30, db_path: str = "data/fundflow.db") -> List[Dict[str, Any]]:
+    """获取最近的指数信号（alerts 表 rule LIKE 'index_%'，复用现有幂等约束）。"""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM alerts WHERE rule LIKE 'index\\_%' ESCAPE '\\' "
+        "AND date >= date('now', ?) ORDER BY created_at DESC",
         (f"-{days} days",),
     )
     rows = cursor.fetchall()

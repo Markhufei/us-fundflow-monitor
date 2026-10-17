@@ -21,6 +21,8 @@
 | 13F 机构持仓 | sec_edgar.collect_inst | ⏳ SEC EDGAR 13F 数据集，数据不足时返回 None 降级 |
 | finra_short | yfinance shortPercentOfFloat | ⚠️ 近似（FINRA API 返回 307 不可用）|
 | etf_flow | — | ⚠️ 免费源不可得，ETF 通过量价异动间接监控 |
+| 指数本体（GSPC/IXIC/DJI） | yfinance `^` 前缀符号（限流重试 30s×2） | ✅ 2026-10-18 接入；Twelve Data 免费档不支持指数（实测 404） |
+| 指数代理/杠杆 ETF | Twelve Data（同 price_volume） | ✅ 代理 GSPC→SPY / IXIC→QQQ / DJI→DIA；杠杆 ETF 按 90 日均量实测选择 |
 
 ## 安装
 
@@ -168,4 +170,50 @@ tail -f logs/streamlit.log                                         # 日志
 ```
 
 cron 每日 06:15（美股收盘后）自动扫描，轮动信号通过 macOS 通知 + Streamlit Web 面板双通道输出。
+
+## 指数观察模块（GSPC / IXIC / DJI）
+
+`--mode index` 每日 06:45 扫描三大指数：指数本体走 yfinance（Twelve Data 免费档不支持指数），
+资金流指标走代理 ETF（GSPC→SPY、IXIC→QQQ、DJI→DIA，指数本体育量为空/失真），
+并采集配套杠杆 ETF（按 90 日均量实测选择：SSO/SPXU、UDOW/SDOW、TQQQ/SQQQ，kind=leveraged 只存量价）。
+
+**双轨框架**：GSPC 对 SPY 的 RS 无意义（SPY 即其代理）→ 纯回撤框架（dd20/dd50 + MA 结构，rs 字段 NULL）；
+IXIC/DJI 复用版块 RS 公式（vs SPY）。5 类触发信号（回调启动/回调结束反弹/资金撤出/抄底/持续上涨）
+复用 alerts 表（`rule=index_*`，同日同规则幂等）；建库回测与实时检测共用 `identify_index_events`，防双实现漂移。
+
+```bash
+# 日常扫描（cron 06:45 自动）
+PYTHONPATH=. .venv/bin/python src/pipeline.py --mode index
+
+# 建/重建历史事件库（一次性，约 5-10 分钟；3 指数全覆盖断言，缺口非零退出）
+PYTHONPATH=. .venv/bin/python scripts/build_index_event_library.py
+
+# 杠杆 ETF 均量实测选择（证据追加 logs/index_etf_selection.log；禁止脚本回写配置）
+PYTHONPATH=. .venv/bin/python scripts/build_index_event_library.py --select-etfs
+```
+
+阈值/周期在 `config/watchlist.yaml` 的 `index_thresholds` / `index_periods`（与检测器/建库脚本三方共读）。
+事件库为**绝对收益**口径（T+1 收盘入场）+ max_dd_20d；条件概率口径按类型：
+pullback_start = 预警命中率（max_dd_20d ≤ -5%），capital_withdrawal = 下跌延续（ret_20d ≤ -2%），
+其余 = 延续（ret_20d ≥ 2%）。面板见 Streamlit「📊 指数观察」页。
+
+**诚实性边界**：概率为历史统计参考非预测；TQQQ/SQQQ 跟踪 NDX 而非 IXIC 综合指数；
+pullback_start 为预警命中率非可交易优势；index_hist_days=250 历史未积累前无信号属设计内行为。
+
+## 三层自动测试
+
+| 层 | 触发时机 | 覆盖范围 | 实现 |
+|----|---------|---------|------|
+| L1 全局 hook | 保存 .py 编辑即测 | 变更相关用例（全局 test-on-change.sh） | `~/.claude` hook，项目外 |
+| L2 pre-commit | `git commit` 即检 | staged src/、web/ 断点扫描 + 全量 pytest | `scripts/hooks/pre-commit` |
+| L3 GitHub Actions | push / PR 即审 | 全量 pytest（ubuntu + Python 3.12，纯测试无 secret） | `.github/workflows/ci.yml` |
+
+L2 hook 不随 `git clone` 存活，新机器/新 clone 后执行一次安装（幂等，可重复执行）：
+
+```bash
+bash scripts/install_hooks.sh
+```
+
+安装后每次 `git commit` 自动执行：staged `src/`、`web/` 下 `.py` 含 `breakpoint(` / `pdb.set_trace` 即拒绝提交；随后跑全量 `.venv/bin/python -m pytest -q`，未全绿同样拒绝。失败输出附修复建议。
+
 

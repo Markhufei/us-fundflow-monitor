@@ -31,6 +31,7 @@ CRON_DAILY="0 6 * * * cd $PROJECT_DIR && set -a && . ./.env && set +a && PYTHONP
 CRON_COMPARE2D="30 6 * * * cd $PROJECT_DIR && set -a && . ./.env && set +a && PYTHONPATH=. $PYTHON_PATH $PIPELINE_SCRIPT --config $CONFIG_PATH --mode compare2d >> $LOG_DIR/cron_compare2d.log 2>&1"
 CRON_WEEKLY="0 7 * * 1 cd $PROJECT_DIR && set -a && . ./.env && set +a && PYTHONPATH=. $PYTHON_PATH $PIPELINE_SCRIPT --config $CONFIG_PATH --mode weekly >> $LOG_DIR/cron_weekly.log 2>&1"
 CRON_SECTOR="15 6 * * * cd $PROJECT_DIR && set -a && . ./.env && set +a && PYTHONPATH=. $PYTHON_PATH $PIPELINE_SCRIPT --config $CONFIG_PATH --mode sector >> $LOG_DIR/cron_sector.log 2>&1"
+CRON_INDEX="45 6 * * * cd $PROJECT_DIR && set -a && . ./.env && set +a && PYTHONPATH=. $PYTHON_PATH $PIPELINE_SCRIPT --config $CONFIG_PATH --mode index >> $LOG_DIR/cron_index.log 2>&1"
 
 echo "=== 设置美股资金流监控 cron 任务 ==="
 echo "项目目录: $PROJECT_DIR"
@@ -38,11 +39,11 @@ echo "Python: $PYTHON_PATH"
 echo ".env: $ENV_FILE"
 echo ""
 
-# 一次性安装：移除旧 fundflow 任务（去重 + 清理旧格式），再写入 3 个新任务
+# 一次性安装：移除旧 fundflow 任务（去重 + 清理旧格式），再写入 5 个新任务
 # 单次 crontab - 调用，避免逐个添加时的读写竞态（macOS crontab 逐次写入会丢失前面的任务）
 EXISTING=$(crontab -l 2>/dev/null | grep -v "us-fundflow-monitor" || true)
-printf '%s\n' "$EXISTING" "$CRON_DAILY" "$CRON_SECTOR" "$CRON_COMPARE2D" "$CRON_WEEKLY" | crontab -
-echo "已安装 4 个 cron 任务: daily(06:00) / sector(06:15) / compare2d(06:30) / weekly(周一 07:00)"
+printf '%s\n' "$EXISTING" "$CRON_DAILY" "$CRON_SECTOR" "$CRON_INDEX" "$CRON_COMPARE2D" "$CRON_WEEKLY" | crontab -
+echo "已安装 5 个 cron 任务: daily(06:00) / sector(06:15) / index(06:45) / compare2d(06:30) / weekly(周一 07:00)"
 
 echo ""
 echo "当前 crontab（fundflow 相关）:"

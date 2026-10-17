@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# L2 提交前检查（三层自动测试第 2 层，安装: bash scripts/install_hooks.sh）
+# 1) staged src/ web/ 下 .py 文件扫描断点（breakpoint( / pdb.set_trace）-> 命中即拒
+# 2) 全量 pytest（项目 ~175 用例 <30s）
+# 失败即拒绝提交（非零退出），输出含修复建议。
+set -u
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+fail=0
+
+# ---------- 1. 断点扫描（仅 staged 的 src/、web/ 下 .py） ----------
+staged_py=$(git diff --cached --name-only --diff-filter=ACM \
+    | grep -E '^(src|web)/.*\.py$' || true)
+if [ -n "$staged_py" ]; then
+    hits=""
+    for f in $staged_py; do
+        [ -f "$f" ] || continue
+        m=$(grep -nE 'breakpoint\(|pdb\.set_trace' -- "$f" || true)
+        [ -n "$m" ] && hits="$hits
+$f: $m"
+    done
+    if [ -n "$hits" ]; then
+        echo "✗ pre-commit: 检测到调试断点，拒绝提交:"
+        echo "$hits"
+        echo "  修复: 删除断点（breakpoint() / pdb.set_trace）后重试 git commit"
+        fail=1
+    fi
+fi
+
+# ---------- 2. 全量 pytest ----------
+if [ -x ".venv/bin/python" ]; then
+    echo "pre-commit: 运行全量 pytest ..."
+    if ! .venv/bin/python -m pytest -q; then
+        echo "✗ pre-commit: pytest 未全绿，拒绝提交"
+        echo "  修复: 按上方失败用例修复后重试 git commit（单独调试: .venv/bin/python -m pytest tests/<file> -q）"
+        fail=1
+    fi
+else
+    echo "✗ pre-commit: 未找到 .venv/bin/python，无法运行测试"
+    echo "  修复: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
+    fail=1
+fi
+
+exit $fail

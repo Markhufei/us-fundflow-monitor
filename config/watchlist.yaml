@@ -111,3 +111,53 @@ sector_periods:
   rs_momentum_period: 30        # RS-Momentum ROC 周期（与归一化窗口同值，JdK 惯例）
   sector_hist_days: 120         # 日常采集历史天数（需 >= 2×period + 去抖余量）
   backtest_years: 25            # 事件库回测年数（2000-2026）
+
+# ===== 指数观察模块（GSPC/IXIC/DJI + 代理/杠杆 ETF；2026-10-18 新增）=====
+# 数据源: 指数本体走 yfinance ^ 前缀（Twelve Data 免费档不支持指数，
+#   2026-10-16 实测 IXIC/DJI/GSPC 404）；代理/杠杆 ETF 走现有 Twelve Data collector。
+# 双轨框架: GSPC 对 SPY 的 RS 无意义（SPY 即其代理）-> 纯回撤框架（rs 字段 NULL）；
+#   IXIC/DJI 复用 sector_rotation RS 公式（vs SPY）。
+# 资金流指标走代理 ETF（指数本体育量为空/失真）: GSPC->SPY、IXIC->QQQ、DJI->DIA。
+# 杠杆 ETF 按 90 日均量实测选择（2026-06-10 ~ 2026-10-16，证据见 logs/index_etf_selection.log）:
+#   GSPC: SSO 3.19M(胜 SPXL 1.69M) / SPXU 8.21M(胜 SDS 3.00M)
+#   DJI:  UDOW 1.73M(胜 DDM 0.19M) / SDOW 3.90M(胜 DXD 1.89M)
+#   IXIC: TQQQ/SQQQ 用户指定——注意跟踪 NDX（100 支大盘股）而非 IXIC 综合指数，口径差异见面板标注
+index_watch:
+  - symbol: GSPC
+    name: 标普500
+    flow_proxy: SPY
+    leveraged_long: SSO
+    leveraged_short: SPXU
+    rs_framework: false         # 纯回撤框架
+  - symbol: IXIC
+    name: 纳斯达克综合
+    flow_proxy: QQQ
+    leveraged_long: TQQQ
+    leveraged_short: SQQQ       # 跟踪 NDX，非 IXIC 综合指数
+    rs_framework: true
+  - symbol: DJI
+    name: 道琼斯工业
+    flow_proxy: DIA
+    leveraged_long: UDOW
+    leveraged_short: SDOW
+    rs_framework: true
+
+# 指数触发阈值（5 类规则共用，identify_index_events / detect / 建库脚本共读本节）
+index_thresholds:
+  pullback_dd: -0.05            # dd20 <= -5% 视为回调（pullback_start / 活跃回调段）
+  confirm_days: 2               # 去抖确认天数（新鲜交叉）
+  pullback_lookback: 15         # 活跃回调段回看天数（dd20.rolling(15).min() <= pullback_dd）
+  vol_confirm: 1.5              # 量能确认（vol_zscore >= 此值）
+  cmf_withdrawal: -0.10         # 资金撤出（cmf 连续 confirm_days 天 < 此值）
+  rebound_min_ret: 0.015        # 抄底信号单日涨幅下限
+  momentum_tol_abs: 0.5         # sustained_uptrend 概率匹配 RS-Momentum 绝对容差
+  prob_min_sample: 10           # 概率查询最小样本（低于标"低置信度"）
+  prob_high_sample: 30          # 高置信度样本阈值
+  sustained_amplitude: 0.02     # 延续/反弹成立定义: ret_20d 绝对收益 >= 2%
+
+# 指数计算周期
+index_periods:
+  rs_ratio_period: 30           # RS-Ratio 归一化窗口（与版块同参）
+  rs_momentum_period: 30        # RS-Momentum ROC 周期
+  index_hist_days: 250          # 日常采集/检测历史天数（需覆盖 MA200）
+  backtest_years: 25            # 事件库回测年数

@@ -127,6 +127,68 @@ CREATE TABLE IF NOT EXISTS stock_snapshot (
 """
 
 # =====================================================================
+# 指数观察模块表结构（GSPC/IXIC/DJI + 代理 ETF + 杠杆 ETF）
+# =====================================================================
+
+INDEX_SNAPSHOT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS index_snapshot (
+    date         TEXT NOT NULL,        -- YYYY-MM-DD
+    symbol       TEXT NOT NULL,        -- ^GSPC / ^IXIC / ^DJI / SPY / QQQ / DIA / SSO / SPXU ...
+    name         TEXT,                 -- 标普500 / 纳斯达克综合 / 道琼斯 ...
+    kind         TEXT,                 -- index(指数本体) / proxy(资金流代理 ETF) / leveraged(杠杆 ETF)
+    close        REAL,
+    volume       INTEGER,              -- 指数本体育空/失真，资金流指标以 proxy 行为准
+    ret_1d       REAL,                 -- 日收益率
+    dd20         REAL,                 -- 收盘 / 20日最高收盘 - 1（回撤）
+    dd50         REAL,                 -- 收盘 / 50日最高收盘 - 1
+    ma20         REAL,
+    ma50         REAL,
+    above_ma200  INTEGER,              -- 收盘 > MA200（1/0/NULL，MA200 序列在 features 里算不入库）
+    rs_ratio     REAL,                 -- vs SPY（仅 IXIC/DJI；GSPC 纯回撤框架为 NULL）
+    rs_momentum  REAL,                 -- vs SPY（仅 IXIC/DJI）
+    cmf          REAL,                 -- 代理 ETF 的 Chaikin Money Flow
+    mfi          REAL,                 -- 代理 ETF 的 Money Flow Index
+    vol_zscore   REAL,                 -- 代理 ETF 的成交量 Z-Score
+    PRIMARY KEY (date, symbol)
+);
+"""
+
+INDEX_HISTORY_EVENTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS index_history_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_date      TEXT NOT NULL,     -- 事件触发日
+    symbol          TEXT NOT NULL,     -- 指数代号（^GSPC / ^IXIC / ^DJI）
+    trigger_type    TEXT NOT NULL,     -- pullback_start / pullback_end_rebound / capital_withdrawal / bottom_fishing / sustained_uptrend
+    rs_momentum     REAL,              -- 触发时 RS-Momentum（GSPC 为 NULL）
+    vol_zscore      REAL,              -- 触发时代理 ETF 量能 Z-Score
+    cmf             REAL,              -- 触发时代理 ETF CMF
+    dd20            REAL,              -- 触发时 20 日回撤
+    ret_5d          REAL,              -- 事件后 5 天绝对收益（T+1 收盘入场，非超额口径）
+    ret_10d         REAL,
+    ret_20d         REAL,
+    ret_60d         REAL,
+    max_dd_20d      REAL,              -- 事件后 20 日内最大回撤（预警命中率口径）
+    duration_days   INTEGER,           -- 持续天数（按触发类型的方向定义）
+    spy_above_ma200 INTEGER            -- 事件日 SPY 收盘 > 其 MA200（1/0/NULL，regime 分桶用）
+);
+CREATE INDEX IF NOT EXISTS idx_ievents_symbol ON index_history_events(symbol);
+CREATE INDEX IF NOT EXISTS idx_ievents_type ON index_history_events(trigger_type);
+"""
+
+# =====================================================================
+# 指数观察模块常量
+# =====================================================================
+
+# 5 类触发规则（rule = "index_" + trigger_type，与 alerts 表 UNIQUE 约束配合幂等）
+INDEX_TRIGGER_LABELS = {
+    "pullback_start": "回调启动(预警)",
+    "pullback_end_rebound": "回调结束反弹",
+    "capital_withdrawal": "资金撤出",
+    "bottom_fishing": "抄底信号",
+    "sustained_uptrend": "持续上涨",
+}
+
+# =====================================================================
 # Collector 返回 schema（dict）
 # =====================================================================
 # price_volume.collect(symbol, days) ->
