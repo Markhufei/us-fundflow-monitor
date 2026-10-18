@@ -359,3 +359,49 @@ def query_events_page(symbol=None, page_size=50, offset=0):
         return pd.read_sql(query, conn, params=params)
     finally:
         conn.close()
+
+
+@st.cache_data(ttl=3600)
+def stage_stats_cached(symbol):
+    """阶段历史类比统计（腾讯全史逐日判阶段，1 小时缓存；重计算故长 TTL）。"""
+    from src.collectors import index_price
+    from src.analyzers.index_stage import stage_history_stats
+    df, _source = index_price.fetch_full_history_with_source(symbol)
+    if df.empty:
+        return {}
+    return stage_history_stats(df["close"])
+
+
+def stage_stats_frame(symbol, current_stage=None):
+    """阶段统计转展示 DataFrame（当前阶段行排首 + ★ 标记；百分比格式化）。"""
+    from src.analyzers.index_stage import STAGE_LABELS
+    stats = stage_stats_cached(symbol)
+    if not stats:
+        return None
+    stages = list(stats.keys())
+    ordered = ([current_stage] if current_stage in stages else []) + \
+              [s for s in stages if s != current_stage]
+    rows = []
+    for stage in ordered:
+        s = stats[stage]
+        rows.append({
+            "阶段": ("★ " if stage == current_stage else "") + STAGE_LABELS.get(stage, stage),
+            "样本n(20日)": s.get("n20"),
+            "20日中位收益": _pct(s.get("median_ret_20d")),
+            "20日上涨占比": _pct(s.get("up_ratio_20d")),
+            "60日中位收益": _pct(s.get("median_ret_60d")),
+            "样本n(60日)": s.get("n60"),
+            "平均持续天数": round(s["avg_duration_days"], 1) if s.get("avg_duration_days") else None,
+        })
+    return pd.DataFrame(rows)
+
+
+def _pct(v):
+    return None if v is None else f"{v * 100:+.1f}%"
+
+
+@st.cache_data(ttl=1800)
+def stage_conclusion_cached(symbol):
+    """阶段判定（30 分钟缓存；DB 不足时回退腾讯采集，网络调用需缓存防每次渲染拉取）。"""
+    from src.analyzers.index_stage import stage_conclusion
+    return stage_conclusion(symbol, DB_PATH)

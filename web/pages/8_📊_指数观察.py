@@ -19,6 +19,34 @@ if not snaps:
     st.warning("暂无指数快照。请运行: PYTHONPATH=. .venv/bin/python src/pipeline.py --mode index")
     st.stop()
 
+# ---------- 当前阶段判定 ----------
+from src.analyzers.index_stage import STAGE_EMOJI, STAGE_LABELS  # noqa: E402
+
+st.subheader("📍 当前阶段判定")
+st.caption("阶段=量化规则判定（close/MA/dd20，可回测复核）；历史同类阶段统计为描述性类比，"
+           "上涨占比是历史频率非概率预测。")
+
+with st.spinner("阶段判定计算中（首次约 1-2 分钟，结果缓存 30/60 分钟）"):
+    for sym in common.INDEXES:
+        try:
+            concl = common.stage_conclusion_cached(sym)
+        except Exception:
+            concl = {"status": "insufficient"}
+        if concl.get("status") != "ok" or not concl.get("stage"):
+            st.write(f"**{sym}**: 阶段判定暂不可用（历史数据积累中）")
+            continue
+        stage = concl["stage"]
+        st.markdown(
+            f"{STAGE_EMOJI[stage]} **{sym} {common.INDEXES[sym]} — {STAGE_LABELS[stage]}**"
+            f"（{concl['as_of']}）")
+        st.caption(" ｜ ".join(concl["evidence"]))
+        with st.expander(f"{sym} 历史同类阶段统计（类比参考非预测）"):
+            frame = common.stage_stats_frame(sym, current_stage=stage)
+            if frame is not None:
+                st.dataframe(frame, width="stretch", hide_index=True)
+            else:
+                st.write("历史统计计算中或数据不足")
+
 # ---------- 最新快照表 ----------
 st.subheader(f"最新指标（截至 {common.latest_snapshot_date(snaps)}）")
 idx_df = pd.DataFrame([s for s in snaps if s.get("kind") == "index"])

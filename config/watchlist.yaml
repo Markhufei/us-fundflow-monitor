@@ -154,6 +154,9 @@ index_thresholds:
   prob_min_sample: 10           # 概率查询最小样本（低于标"低置信度"）
   prob_high_sample: 30          # 高置信度样本阈值
   sustained_amplitude: 0.02     # 延续/反弹成立定义: ret_20d 绝对收益 >= 2%
+  stage_dd_early: -0.03         # 阶段判定: 高位回调初期 dd20 下限（index_stage）
+  stage_dd_active: -0.05        # 阶段判定: 活跃回调 dd20 下限
+  stage_rebound_lookback: 20    # 阶段判定: 反弹修复回看窗口（min(dd20) <= stage_dd_active）
 
 # 指数计算周期
 index_periods:

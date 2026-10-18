@@ -30,10 +30,16 @@ def _page8_path():
 
 @pytest.fixture
 def tmp_db(tmp_path, monkeypatch):
-    """tmp 空库 + 切换 common.DB_PATH + 清缓存（缓存键不含 DB 路径，必须先清）。"""
+    """tmp 空库 + 切换 common.DB_PATH + 清缓存（缓存键不含 DB 路径，必须先清）。
+
+    同时掐断阶段判定的腾讯回退与全史统计（离线：不足 60 日 -> insufficient）。
+    """
     db = str(tmp_path / "web.db")
     store.init_db(db)
     monkeypatch.setattr(common, "DB_PATH", db)
+    from src.collectors import index_price
+    monkeypatch.setattr(index_price, "collect_index_with_source", lambda *a, **kw: ([], ""))
+    monkeypatch.setattr(common, "stage_stats_cached", lambda symbol: {})
     common.clear_data_cache()
     yield db
     common.clear_data_cache()
@@ -165,3 +171,18 @@ def test_page8_recent_index_signals_render(tmp_db):
     at = _run_page8()
     assert not at.exception
     assert "GSPC" in _all_text(at)
+
+
+def test_page8_stage_section_renders(tmp_db, monkeypatch):
+    """阶段判定区块: 固定结论渲染阶段标签+证据，不触网（conclusion/stats 全 patch）。"""
+    _seed_index_data(tmp_db)
+    fake = {"symbol": "GSPC", "stage": "active_pullback", "status": "ok",
+            "as_of": date.today().isoformat(),
+            "evidence": ["收盘 5,011.00", "MA20 5,010.00", "dd20 -2.0%"]}
+    monkeypatch.setattr(common, "stage_conclusion_cached", lambda sym: dict(fake, symbol=sym))
+    at = _run_page8()
+    assert not at.exception
+    text = _all_text(at)
+    assert "当前阶段判定" in text
+    assert "活跃回调" in text      # STAGE_LABELS["active_pullback"]
+    assert "dd20" in text          # 证据行渲染
