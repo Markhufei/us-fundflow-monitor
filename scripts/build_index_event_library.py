@@ -153,13 +153,14 @@ def main():
         proxy_sym = item.get("flow_proxy")
         print(f"处理 {symbol} ({name})...")
 
-        idx_df = index_price.fetch_full_history(symbol)
+        idx_df, idx_source = index_price.fetch_full_history_with_source(symbol)
         if len(idx_df) < 60:
             reason = f"指数数据不足 60 天（{len(idx_df)} 条）"
             print(f"  {symbol}: {reason}，跳过")
             skipped[symbol] = reason
             continue
-        print(f"  {symbol}: 指数 {len(idx_df)} 天，{idx_df['date'].iloc[0]} ~ {idx_df['date'].iloc[-1]}")
+        print(f"  {symbol}: 指数 {len(idx_df)} 天（source={idx_source}），"
+              f"{idx_df['date'].iloc[0]} ~ {idx_df['date'].iloc[-1]}")
 
         proxy_df = fetch_etf_full_history(proxy_sym) if proxy_sym else pd.DataFrame()
         if len(proxy_df) < 60:

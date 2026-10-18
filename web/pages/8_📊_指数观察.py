@@ -10,6 +10,7 @@ from src.schema import INDEX_TRIGGER_LABELS
 common.init()
 st.title("📊 指数观察")
 st.caption("三大指数（GSPC/IXIC/DJI）回撤 + 资金流代理（SPY/QQQ/DIA）观察模块。"
+           "主源腾讯财经真指数 OHLCV，事件库深度约 2008→今；"
            "概率为历史事件统计参考非预测；TQQQ/SQQQ 跟踪 NDX 而非 IXIC 综合指数（口径差异）；"
            "pullback_start 为预警命中率非可交易优势。")
 
@@ -25,7 +26,7 @@ if not idx_df.empty:
     idx_df["名称"] = idx_df["symbol"].map(common.INDEXES).fillna(idx_df["symbol"])
     show = ["symbol", "名称", "date", "close", "ret_1d", "dd20", "dd50",
             "ma20", "ma50", "above_ma200", "rs_ratio", "rs_momentum",
-            "cmf", "mfi", "vol_zscore"]
+            "cmf", "mfi", "vol_zscore", "data_source"]
     st.dataframe(idx_df[[c for c in show if c in idx_df.columns]].round(4),
                  width="stretch", hide_index=True)
 

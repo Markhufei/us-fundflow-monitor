@@ -100,7 +100,12 @@ def _fake_collect(fail=()):
 
 def _stub_collectors(monkeypatch, fail=()):
     fake = _fake_collect(fail)
-    monkeypatch.setattr(index_price, "collect_index", fake)
+
+    def fake_index(symbol, days=60, **kw):
+        """适配腾讯主源改造后的 collect_index_with_source（返回 (rows, source)）。"""
+        return fake(symbol, days=days), "tencent"
+
+    monkeypatch.setattr(index_price, "collect_index_with_source", fake_index)
     import src.collectors.price_volume as pv
     monkeypatch.setattr(pv, "collect", fake)
 

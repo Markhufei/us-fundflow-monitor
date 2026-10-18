@@ -51,6 +51,10 @@ def init_db(db_path: str = "data/fundflow.db"):
     hist_cols = [row[1] for row in cursor.execute("PRAGMA table_info(sector_history_events)").fetchall()]
     if "spy_above_ma200" not in hist_cols:
         cursor.execute("ALTER TABLE sector_history_events ADD COLUMN spy_above_ma200 INTEGER")
+    # 幂等迁移: 腾讯主源上线，index_snapshot 补 data_source 列（2026-10-18）
+    idx_cols = [row[1] for row in cursor.execute("PRAGMA table_info(index_snapshot)").fetchall()]
+    if "data_source" not in idx_cols:
+        cursor.execute("ALTER TABLE index_snapshot ADD COLUMN data_source TEXT")
 
     conn.commit()
     conn.close()
@@ -422,14 +426,15 @@ def store_index_snapshot(row: Dict[str, Any], db_path: str = "data/fundflow.db")
     cursor.execute("""
         INSERT OR REPLACE INTO index_snapshot
         (date, symbol, name, kind, close, volume, ret_1d, dd20, dd50,
-         ma20, ma50, above_ma200, rs_ratio, rs_momentum, cmf, mfi, vol_zscore)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ma20, ma50, above_ma200, rs_ratio, rs_momentum, cmf, mfi, vol_zscore, data_source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         row.get("date"), row.get("symbol"), row.get("name"), row.get("kind"),
         row.get("close"), row.get("volume"), row.get("ret_1d"),
         row.get("dd20"), row.get("dd50"), row.get("ma20"), row.get("ma50"),
         row.get("above_ma200"), row.get("rs_ratio"), row.get("rs_momentum"),
         row.get("cmf"), row.get("mfi"), row.get("vol_zscore"),
+        row.get("data_source"),
     ))
     conn.commit()
     conn.close()

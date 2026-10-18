@@ -161,3 +161,7 @@ index_periods:
   rs_momentum_period: 30        # RS-Momentum ROC 周期
   index_hist_days: 250          # 日常采集/检测历史天数（需覆盖 MA200）
   backtest_years: 25            # 事件库回测年数
+# 数据源补充（2026-10-18）: 指数本体主源=腾讯财经 kline（真指数 OHLCV，中国直连无 key，
+#   GSPC->usINX / IXIC->usIXIC / DJI->usDJI；单次 <=800 根分段翻页，历史深度约 2008->今），
+#   备源=yfinance ^ 前缀（Yahoo 对本机 IP 持续 429/403 封禁期间不可用）。
+#   实时信号 data_source 列记录实际来源（tencent/yfinance/twelvedata）。

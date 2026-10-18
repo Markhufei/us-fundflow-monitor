@@ -181,7 +181,7 @@ def run(config_path: str = "config/watchlist.yaml", mode: str = "daily") -> None
         _check_freshness(db_path, config)
         return
 
-    # 指数观察模式：独立流程（指数本体 yfinance + 代理/杠杆 ETF Twelve Data）
+    # 指数观察模式：独立流程（指数本体腾讯主源 + 代理/杠杆 ETF Twelve Data）
     if mode == "index":
         ok, skipped = _run_index(config, db_path)
         logger.info(f"index 完成 ok={ok} skipped={skipped}")
@@ -435,7 +435,8 @@ def _run_sector(config: Dict[str, Any], db_path: str) -> "tuple[bool, List[str]]
 def _run_index(config: Dict[str, Any], db_path: str) -> "tuple[bool, List[str]]":
     """指数观察扫描: 拉 3 指数(yfinance) + 代理/杠杆 ETF(Twelve Data) -> 算特征 -> 存快照 -> 检测信号 -> 告警。
 
-    指数本体走 index_price.collect_index（Twelve Data 免费档不支持指数）；
+    指数本体走 index_price.collect_index_with_source（主源=腾讯真指数 OHLCV，备源 yfinance；
+    Twelve Data 免费档不支持指数且 Yahoo 2026-10 起 IP 级封禁）；
     代理/杠杆 ETF 走 price_volume.collect（Twelve Data 优先）。杠杆 ETF 行只存量价。
 
     Returns:
@@ -483,8 +484,9 @@ def _run_index(config: Dict[str, Any], db_path: str) -> "tuple[bool, List[str]]"
         proxy_sym = item.get("flow_proxy")
         proxy_hist = hist_map.get(proxy_sym) if proxy_sym else None
 
-        # 指数本体（yfinance）
-        idx_hist = _drop_partial_tail(index_price.collect_index(symbol, days=pull_days))
+        # 指数本体（腾讯主源 -> yfinance 备源；真指数口径不变）
+        idx_hist_raw, idx_source = index_price.collect_index_with_source(symbol, days=pull_days)
+        idx_hist = _drop_partial_tail(idx_hist_raw)
         if not idx_hist:
             logger.warning(f"{symbol} 指数数据获取失败，跳过")
             skipped.append(symbol)
@@ -513,6 +515,7 @@ def _run_index(config: Dict[str, Any], db_path: str) -> "tuple[bool, List[str]]"
             "rs_momentum": _num(latest.get("rs_momentum")),
             "cmf": _num(latest.get("cmf")), "mfi": _num(latest.get("mfi")),
             "vol_zscore": _num(latest.get("vol_zscore")),
+            "data_source": idx_source,
         }
         store.store_index_snapshot(snap, db_path)
         index_snapshots.append(snap)
@@ -526,6 +529,7 @@ def _run_index(config: Dict[str, Any], db_path: str) -> "tuple[bool, List[str]]"
                 "name": f"{name}代理", "kind": "proxy",
                 "close": _num(p_latest.get("close")),
                 "volume": _int_or_none(p_latest.get("volume")),
+                "data_source": "twelvedata",
             }, db_path)
 
         # 杠杆 ETF 行（只存量价，供面板展示）
@@ -544,6 +548,7 @@ def _run_index(config: Dict[str, Any], db_path: str) -> "tuple[bool, List[str]]"
                 "name": f"{name}{kind_name}杠杆", "kind": "leveraged",
                 "close": _num(lev_latest.get("close")),
                 "volume": _int_or_none(lev_latest.get("volume")),
+                "data_source": "twelvedata",
             }, db_path)
 
     # 检测信号: 对 DB 历史跑同一 identify_index_events，过滤当日（与建库一套代码）

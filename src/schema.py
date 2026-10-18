@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS index_snapshot (
     cmf          REAL,                 -- 代理 ETF 的 Chaikin Money Flow
     mfi          REAL,                 -- 代理 ETF 的 Money Flow Index
     vol_zscore   REAL,                 -- 代理 ETF 的成交量 Z-Score
+    data_source  TEXT,                 -- 数据来源: tencent / yfinance / twelvedata
     PRIMARY KEY (date, symbol)
 );
 """

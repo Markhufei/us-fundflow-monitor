@@ -8,7 +8,7 @@ fetch mock 下的特征帧构建与事件落库；覆盖缺口 -> SystemExit（�
     按末 window 日均量选最大；无记录/不足 window 半数/均量 0 剔除；并列取首位
   - main() 用相对路径 data/fundflow.db（测试 monkeypatch.chdir(tmp) 隔离，不碰真实库）
   - 配置经 _load_config() 读取（测试 monkeypatch 注入）；指数本体走
-    index_price.fetch_full_history，ETF/SPY 走 fetch_etf_full_history
+    index_price.fetch_full_history_with_source，ETF/SPY 走 fetch_etf_full_history
 """
 import sys
 import os
@@ -147,9 +147,10 @@ def test_build_stores_events_with_mocked_fetch(tmp_path, monkeypatch):
     monkeypatch.setattr(mod.time, "sleep", lambda s: None)
 
     def fake_index_fetch(symbol):
-        return _pullback_df() if symbol == "GSPC" else _flat_df()
+        df = _pullback_df() if symbol == "GSPC" else _flat_df()
+        return df, "tencent"   # 腾讯主源改造后 fetch_full_history_with_source 返回 (df, source)
 
-    monkeypatch.setattr("src.collectors.index_price.fetch_full_history", fake_index_fetch)
+    monkeypatch.setattr("src.collectors.index_price.fetch_full_history_with_source", fake_index_fetch)
     monkeypatch.setattr(mod, "fetch_etf_full_history", lambda symbol: _flat_df())
     monkeypatch.setattr(mod, "_load_config", lambda: CONFIG)
 
@@ -171,9 +172,9 @@ def test_build_coverage_gap_exits(tmp_path, monkeypatch):
     monkeypatch.setattr(mod.time, "sleep", lambda s: None)
 
     def fake_index_fetch(symbol):
-        return pd.DataFrame(columns=["date", "close", "high", "low", "volume"])
+        return pd.DataFrame(columns=["date", "close", "high", "low", "volume"]), ""
 
-    monkeypatch.setattr("src.collectors.index_price.fetch_full_history", fake_index_fetch)
+    monkeypatch.setattr("src.collectors.index_price.fetch_full_history_with_source", fake_index_fetch)
     monkeypatch.setattr(mod, "fetch_etf_full_history", lambda symbol: _flat_df())
     monkeypatch.setattr(mod, "_load_config", lambda: CONFIG)
 
