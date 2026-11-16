@@ -101,6 +101,8 @@ sector_stocks:
   - { symbol: META,  name: "Meta 平台",       sector_symbol: XLC }
   - { symbol: AMZN,  name: "亚马逊 Amazon",   sector_symbol: XLY }
   - { symbol: TSLA,  name: "特斯拉 Tesla",    sector_symbol: XLY }
+  # 2026-11-17 新增: SOXX 半导体 ETF（用户要求；ETF 与个股同走 RS vs SPY 管道）
+  - { symbol: SOXX,  name: "iShares 半导体 ETF", sector_symbol: XLK }
 
 # 版块计算周期
 # 2026-08-31 回测定参（2025-10-01~2026-08-31, 扣 0.1%/笔, 5 对含 XLK/XLE/XLF vs SPY）:
@@ -140,6 +142,14 @@ index_watch:
     flow_proxy: DIA
     leveraged_long: UDOW
     leveraged_short: SDOW
+    rs_framework: true
+  # 2026-11-17 新增: SOXX 半导体 ETF（用户要求；ETF 走 Twelve Data 通道，
+  #   腾讯 TENCENT_MAP 无此符号；无杠杆 ETF 配对——SOXL/SOXS 量能待实测后再定）
+  - symbol: SOXX
+    name: 半导体ETF
+    flow_proxy: SMH
+    leveraged_long: ""
+    leveraged_short: ""
     rs_framework: true
 
 # 指数触发阈值（5 类规则共用，identify_index_events / detect / 建库脚本共读本节）

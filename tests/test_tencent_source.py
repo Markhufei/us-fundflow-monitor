@@ -193,3 +193,82 @@ def test_init_db_migration_adds_data_source(tmp_path):
     cols = [r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(index_snapshot)")]
     assert "data_source" in cols
     store.init_db(db)   # 二次执行不报错（幂等）
+
+
+# ---------- ETF 通道（SOXX 等 ETF 类标的走 Twelve Data；2026-11-17 新增） ----------
+
+def test_collect_index_etf_channel_twelvedata(monkeypatch):
+    """SOXX（非 TENCENT_MAP、非 ^ 指数）-> ETF 通道 Twelve Data，source=twelvedata。"""
+    monkeypatch.setattr(index_price, "fetch_tencent_index", lambda *a, **kw: [])
+    monkeypatch.setattr(index_price, "price_volume_collect", lambda sym, days: [
+        {"date": "2026-11-13", "close": 250.5, "high": 252.0, "low": 249.0,
+         "volume": 2190000, "vwap": None}])
+    rows, source = index_price.collect_index_with_source("SOXX", days=60)
+    assert source == "twelvedata"
+    assert rows[0]["symbol"] == "SOXX"
+    assert rows[0]["vwap"] == pytest.approx((252.0 + 249.0 + 250.5) / 3)
+
+
+def test_collect_index_etf_channel_failure_falls_back(monkeypatch):
+    """ETF 通道失败 -> 降级 yfinance（mock _fetch_history），不抛异常。"""
+    import pandas as pd
+    monkeypatch.setattr(index_price, "fetch_tencent_index", lambda *a, **kw: [])
+    monkeypatch.setattr(index_price, "price_volume_collect", lambda sym, days: [])
+    hist = pd.DataFrame({
+        "Close": [100.0], "High": [101.0], "Low": [99.0], "Volume": [5],
+    }, index=pd.DatetimeIndex(["2026-11-13"], name="Date"))
+    monkeypatch.setattr(index_price, "_fetch_history", lambda sym, period: hist)
+    rows, source = index_price.collect_index_with_source("SOXX", days=60)
+    assert source == "yfinance"
+    assert rows[0]["close"] == 100.0
+
+
+def test_collect_index_tencent_symbol_skips_etf_channel(monkeypatch):
+    """腾讯符号（GSPC）腾讯失败时不走 ETF 通道，直接降级 yfinance。"""
+    monkeypatch.setattr(index_price, "fetch_tencent_index", lambda *a, **kw: [])
+    called = []
+    monkeypatch.setattr(index_price, "price_volume_collect",
+                        lambda sym, days: called.append(sym))
+    monkeypatch.setattr(index_price, "_fetch_history", lambda sym, period: None)
+    rows, source = index_price.collect_index_with_source("GSPC", days=60)
+    assert called == []  # ETF 通道未被触碰
+    assert source == ""
+
+
+def test_full_history_etf_channel(monkeypatch):
+    """建库全史: SOXX 走 ETF 通道，返回 (df, 'twelvedata') 列序 date/close/high/low/volume。"""
+    import pandas as pd
+    n = 100  # >60 门槛（fetch_full_history_with_source 对 ETF 通道要求 len(df)>60）
+    fake = pd.DataFrame({
+        "date": [f"2026-{(i//28)+1:02d}-{(i%28)+1:02d}" for i in range(n)],
+        "close": [250.0 + i * 0.1 for i in range(n)],
+        "high": [251.0 + i * 0.1 for i in range(n)],
+        "low": [249.0 + i * 0.1 for i in range(n)],
+        "volume": [2000000] * n,
+    })
+    monkeypatch.setattr(index_price, "_etf_full_history_df", lambda sym: fake)
+    df, source = index_price.fetch_full_history_with_source("SOXX")
+    assert source == "twelvedata"
+    assert list(df.columns) == ["date", "close", "high", "low", "volume"]
+    assert len(df) == n
+
+
+def test_full_history_etf_channel_insufficient(monkeypatch):
+    """ETF 全史 < 60 天 -> 不采用，降级 yfinance（防短史误判全量）。"""
+    import pandas as pd
+    monkeypatch.setattr(index_price, "_etf_full_history_df",
+                        lambda sym: pd.DataFrame({"date": ["2026-11-13"],
+                                                  "close": [250.0], "high": [251.0],
+                                                  "low": [249.0], "volume": [100]}))
+    monkeypatch.setattr(index_price, "_fetch_history", lambda sym, period: None)
+    df, source = index_price.fetch_full_history_with_source("SOXX")
+    assert source == "" and df.empty
+
+
+def test_watchlist_soxx_in_both_modules():
+    """SOXX 同时在 sector_stocks（个股监控）与 index_watch（指数观察）。"""
+    import yaml
+    cfg = yaml.safe_load(open("config/watchlist.yaml"))
+    stock_syms = [s["symbol"] for s in cfg["sector_stocks"]]
+    index_syms = [i["symbol"] for i in cfg["index_watch"]]
+    assert "SOXX" in stock_syms and "SOXX" in index_syms

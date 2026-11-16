@@ -20,6 +20,12 @@ import pandas as pd
 import yfinance as yf
 from typing import List, Dict, Optional, Tuple
 
+
+def price_volume_collect(symbol: str, days: int) -> List[Dict]:
+    """薄委托 price_volume.collect（模块级函数便于测试 monkeypatch）。"""
+    from src.collectors import price_volume
+    return price_volume.collect(symbol, days=days)
+
 # Twelve Data 风格裸符号 -> Yahoo 指数符号（^ 前缀）；ETF 符号不在表内，原样返回
 TD_TO_YF = {
     "GSPC": "^GSPC",
@@ -48,6 +54,72 @@ _TENCENT_RETRY_DELAY = 10.0  # 空响应（限流）重试间隔，实测约 10s
 def map_yf_symbol(symbol: str) -> str:
     """裸指数符号转 yfinance ^ 前缀符号；其余（ETF 等）原样返回。"""
     return TD_TO_YF.get(symbol, symbol)
+
+
+def _etf_rows_to_output(hist: "list", symbol: str) -> List[Dict]:
+    """price_volume.collect 行转 collect 输出结构（字段同构，补 vwap 典型价）。"""
+    result = []
+    for r in hist:
+        high, low, close = r.get("high"), r.get("low"), r.get("close")
+        vwap = r.get("vwap")
+        if vwap is None and None not in (high, low, close):
+            vwap = (high + low + close) / 3
+        result.append({
+            "date": r.get("date"), "symbol": symbol,
+            "close": close, "high": high, "low": low,
+            "volume": r.get("volume"),
+            "vwap": float(vwap) if vwap is not None else None,
+        })
+    return result
+
+
+def _etf_chunk(symbol: str, end_date: str = None) -> list:
+    """Twelve Data 单块 ETF 拉取（最多 5000 根），复用建库脚本 _td_chunk 同款翻页协议。
+
+    独立实现（scripts/ 不被 src/ 反向 import）；输出列 date,close,high,low,volume 升序。
+    """
+    from src.collectors import twelvedata
+    params = {"symbol": symbol, "interval": "1day", "outputsize": 5000}
+    if end_date:
+        params["end_date"] = end_date
+    data = twelvedata._get(params)
+    if not data or data.get("status") != "ok" or "values" not in data:
+        return []
+    rows = [{
+        "date": r.get("datetime"),
+        "close": twelvedata._to_float(r.get("close")),
+        "high": twelvedata._to_float(r.get("high")),
+        "low": twelvedata._to_float(r.get("low")),
+        "volume": twelvedata._to_int(r.get("volume")),
+    } for r in data["values"]]
+    rows.reverse()
+    return rows
+
+
+def _etf_full_history_df(symbol: str) -> Optional[pd.DataFrame]:
+    """Twelve Data 翻页拉 ETF 全史转 DataFrame（SOXX 等 ETF 类标的建库/阶段统计用）。
+
+    单请求 outputsize 上限 5000，用 end_date 向前翻页；返回列
+    date,close,high,low,volume 升序。拉取失败返回 None（区分空数据）。
+    """
+    all_rows: list = []
+    end_date = None
+    for _ in range(8):  # 5000 根/块 × 8 ≈ 80 年，足够 ETF 全史
+        chunk = _etf_chunk(symbol, end_date)
+        if not chunk:
+            break
+        all_rows = chunk + all_rows
+        earliest = chunk[0]["date"]
+        if len(chunk) < 5000:
+            break  # 已到成立日
+        y, m, d = (int(x) for x in earliest.split("-"))
+        end_date = (datetime.date(y, m, d)
+                    - datetime.timedelta(days=1)).isoformat()
+        time.sleep(_TENCENT_DELAY)  # 复用 2s 间隔（8req/min 配额保护）
+    if not all_rows:
+        return None
+    df = pd.DataFrame(all_rows)
+    return df.sort_values("date").reset_index(drop=True)
 
 
 def _tencent_fetch_window(code: str, start: str, end: str) -> Optional[List[List]]:
@@ -167,12 +239,15 @@ def _fetch_history(yf_symbol: str, period: str):
 
 
 def collect_index_with_source(symbol: str, days: int = 60) -> Tuple[List[Dict], str]:
-    """获取指数日线量价：腾讯主源 -> yfinance 备源。
+    """获取指数日线量价：腾讯主源 -> ETF 通道(Twelve Data) -> yfinance 备源。
+
+    ETF 类标的（TENCENT_MAP 无映射且非 ^ 指数，如 SOXX）走 ETF 通道：
+    Twelve Data 主源（2026-11-17 实测 SOXX 可用），yfinance 降为末位备源。
 
     Returns:
         (rows, source): rows 与 price_volume.collect 同构
         （List[{date, symbol, close, high, low, volume, vwap}]，升序）；
-        source 为 "tencent" / "yfinance" / ""（全失败，rows=[]）。
+        source 为 "tencent" / "twelvedata" / "yfinance" / ""（全失败，rows=[]）。
     """
     # 主源：腾讯（真指数，Yahoo 被 IP 封禁时仍可用）
     if symbol in TENCENT_MAP:
@@ -180,6 +255,12 @@ def collect_index_with_source(symbol: str, days: int = 60) -> Tuple[List[Dict], 
         rows = fetch_tencent_index(symbol, start=start)
         if rows:
             return _tencent_rows_to_output(rows, symbol), "tencent"
+
+    # ETF 通道：Twelve Data（ETF 类标的，如 SOXX；TENCENT_MAP 无映射且非 ^ 指数）
+    if symbol not in TENCENT_MAP and not symbol.startswith("^"):
+        etf_hist = price_volume_collect(symbol, days=days)
+        if etf_hist:
+            return _etf_rows_to_output(etf_hist, symbol), "twelvedata"
 
     # 备源：yfinance
     hist = _fetch_history(map_yf_symbol(symbol), period=f"{days}d")
@@ -226,18 +307,24 @@ def _tencent_full_history_df(symbol: str) -> Optional[pd.DataFrame]:
 
 
 def fetch_full_history_with_source(symbol: str) -> Tuple[pd.DataFrame, str]:
-    """拉指数全部可得历史（建库用）：腾讯翻页全史 -> yfinance period="max"。
+    """拉指数全部可得历史（建库用）：腾讯翻页全史 -> ETF 通道 -> yfinance period="max"。
 
     Returns:
         (df, source): DataFrame（date,close,high,low,volume 升序），
-        source 为 "tencent" / "yfinance" / ""（全失败，df 为空 DataFrame）。
-        腾讯历史深度约 2008/2009 -> 今（实测），yfinance 全史更深但受 IP 封禁影响。
+        source 为 "tencent" / "twelvedata" / "yfinance" / ""（全失败，df 为空 DataFrame）。
+        腾讯历史深度约 2008/2009 -> 今（实测）；ETF 类走 Twelve Data 至成立日（如 SOXX 1998-05）。
     """
     # 主源：腾讯
     if symbol in TENCENT_MAP:
         df = _tencent_full_history_df(symbol)
         if df is not None:
             return df[["date", "close", "high", "low", "volume"]], "tencent"
+
+    # ETF 通道：Twelve Data 翻页全史（ETF 类标的，如 SOXX）
+    if symbol not in TENCENT_MAP and not symbol.startswith("^"):
+        df = _etf_full_history_df(symbol)
+        if df is not None and len(df) > 60:
+            return df[["date", "close", "high", "low", "volume"]], "twelvedata"
 
     # 备源：yfinance
     hist = _fetch_history(map_yf_symbol(symbol), period="max")

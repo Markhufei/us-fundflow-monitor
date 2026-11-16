@@ -37,10 +37,13 @@ STOCKS = {
     "MSFT": "微软 Microsoft", "NVDA": "英伟达 NVIDIA",
     "GOOGL": "谷歌 Alphabet", "META": "Meta 平台",
     "AMZN": "亚马逊 Amazon", "TSLA": "特斯拉 Tesla",
+    # 2026-11-17 新增: SOXX 半导体 ETF（与个股同走 RS vs SPY 管道）
+    "SOXX": "iShares 半导体 ETF",
 }
 
-# 三大指数 + 中文名（指数观察模块）
-INDEXES = {"GSPC": "标普500", "IXIC": "纳斯达克综合", "DJI": "道琼斯工业"}
+# 三大指数 + SOXX（指数观察模块；SOXX 为 ETF，走 Twelve Data 通道）
+INDEXES = {"GSPC": "标普500", "IXIC": "纳斯达克综合", "DJI": "道琼斯工业",
+           "SOXX": "半导体ETF"}
 
 # 指数触发类型标签（与 src.schema.INDEX_TRIGGER_LABELS 同源，勿单边改动）
 TRIGGER_LABELS = INDEX_TRIGGER_LABELS
